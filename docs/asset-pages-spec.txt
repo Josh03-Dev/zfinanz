@@ -1,0 +1,585 @@
+================================================================================
+  ZPF — ASSET CLASS PAGES SPECIFICATION
+  Monetary · Securities · Metals · Digital Assets · Real Estate
+  Last updated: 2026-04-03
+================================================================================
+
+This file covers the 5 asset detail pages. Each follows the same structural
+pattern: hero/KPI strip → asset-specific content → transaction history.
+All values come from the financial engine (see portfolio-page-spec.txt Appendix).
+
+================================================================================
+  PAGE 1: MONETARY HOLDINGS
+  File: /app/dashboard/monetary/page.tsx
+  Route: /dashboard/monetary
+================================================================================
+
+PURPOSE: Shows the client's full cash position across all currency accounts —
+balances, interest rates, FX rates, and cash movement history.
+
+────────────────────────────────────────────────────────────────────────────────
+  HERO SECTION (3-column grid)
+────────────────────────────────────────────────────────────────────────────────
+
+Main card (2 cols): Total Cash Holdings
+  • Sum of all account balances converted to CHF at live FX rates
+  • Trend line: "+CHF 49,500 (+1.2%) interest accrued — Q3 2025"
+    → this is total interest CREDITED across all accounts in the quarter
+  • Sub: "4 accounts · CHF, EUR, USD, GBP denominations · All values shown in CHF"
+
+Mini card 1: Interest Income YTD
+  • Total interest earned across ALL accounts year-to-date, in CHF
+  • Projected annual ≈ sum(each account's interestRate × balanceCHF)
+  • Progress bar: YTD interest / projected annual (28% = Jan–Apr of year)
+  • DATA: Σ(monetaryAccounts.interestAccruedYTD) converted to CHF
+
+Mini card 2: Highest Yield Account (hidden ≤1024px)
+  • Name and rate of the account with the highest interest rate
+  • Maturity date if it's a fixed deposit
+  • Progress bar: interestRate / 5.5% (max display rate) × 100
+  • DATA: max(monetaryAccounts.interestRate) → account details
+
+Stats strip (full width, 3 cells):
+  Cell 1: Cash Accounts — count + breakdown (2 current · 1 notice · 1 fixed deposit)
+  Cell 2: Portfolio Weight — % of total portfolio + absolute CHF
+  Cell 3: Next Interest Payment — date + description (calendar icon, gold text)
+
+────────────────────────────────────────────────────────────────────────────────
+  QUICK ACTIONS (4 buttons)
+────────────────────────────────────────────────────────────────────────────────
+  1. Request Transfer → /dashboard/transfers?action=new
+  2. Currency Exchange → /dashboard/transfers?action=new&type=fx
+     (pre-selects FX transfer type in the form)
+  3. Download Statement → triggers account statement PDF for monetary accounts only
+  4. Contact RM → /dashboard/messages?action=new&to=rm
+
+────────────────────────────────────────────────────────────────────────────────
+  ACCOUNT BREAKDOWN — 4 ACCOUNT CARDS (2×2 grid)
+────────────────────────────────────────────────────────────────────────────────
+
+One card per monetary account. Each card shows:
+  • Thin colour accent bar at top (each currency has a unique colour)
+  • Account type label (e.g., "CHF Current Account")
+  • Currency name (e.g., "CHF — Swiss Franc")
+  • Lock icon if account is locked (cannot be debited — e.g., fixed deposit)
+  • Main balance in native currency (large serif number)
+  • CHF equivalent (gold, smaller, only shown for non-CHF accounts)
+    "≈ CHF {balanceCHF}" — the "≈" signals it's a converted estimate
+  • 3-col micro stats:
+      - FX/CHF rate (e.g., 0.9031 for USD/CHF) or "1.0000" for CHF accounts
+      - Interest rate p.a. (gold)
+      - YTD interest income (green)
+  • Account number (mono, faint — partial masking for security)
+  • Maturity date if fixed / notice period if notice account
+
+THE 4 ACCOUNTS:
+  1. CHF Current Account — no lock, no maturity, lowest rate (~0.25%)
+  2. EUR Notice Account — 30-day notice required before withdrawal
+  3. USD Fixed Deposit — locked until maturity (15 Jul 2026), highest rate (4.85%)
+  4. GBP Current Account — no lock, standard savings rate
+
+LOCKED ACCOUNT BEHAVIOUR:
+  When locked = true:
+  • The "Request Transfer" and "Currency Exchange" buttons skip this account
+    when building the debit account selector
+  • The card shows a lock icon at top right
+  • Attempting to debit shows: "This account is locked until {maturity}"
+
+DATA SOURCE:
+  mockMonetaryAccounts → DB: monetaryAccounts WHERE clientId = {id}
+  Live FX rates: Frankfurter API, refreshed every 15 min, cached in FXRateCache
+  Interest rates: stored on account record, set by RM, not live market rates
+
+HOW BALANCE IS CALCULATED:
+  balance = Σ(CREDIT transactions) − Σ(DEBIT transactions)
+  in native currency, for all transactions with date ≤ today
+  Interest is posted as a CREDIT transaction by the RM or by an automated
+  interest accrual job (monthly or quarterly, depending on account type)
+
+────────────────────────────────────────────────────────────────────────────────
+  LOWER PANELS (2-column grid)
+────────────────────────────────────────────────────────────────────────────────
+
+Holdings Breakdown panel:
+  • A stacked segmented bar showing all 4 accounts as proportional colour blocks
+  • Below it: one row per account with colour dot, name, fill bar, %, and CHF K value
+  • Footer: live FX rates used for conversion, with "Rates as of {date}"
+  • FX rates shown here must match the rates used in balance conversion above
+
+Interest Summary panel:
+  • One row per account showing: account name, rate, YTD income, maturity/notice info
+  • Each row has a fill bar: width = interestRate / 5.5% × 100 (visual context)
+  • Footer: "Total YTD (CHF equiv.)" + projected annual income
+  • Projected = Σ(account.interestRate × account.balanceCHF)
+
+────────────────────────────────────────────────────────────────────────────────
+  RECENT TRANSACTIONS (full width panel)
+────────────────────────────────────────────────────────────────────────────────
+
+Shows the last 10 transactions across ALL monetary accounts. Each row:
+  • Icon (colour-coded by type): inbound (green), outbound (red), FX (blue),
+    interest (gold), notice (grey)
+  • Transaction name + date + detail (account, counterparty, notes)
+  • Amount in native currency (+ or −), currency label below
+  • "Full history →" link → /dashboard/transactions?filter=monetary
+
+TRANSACTION TYPES:
+  inbound  → wire received, deposit — always a CREDIT, always green
+  outbound → payment sent, withdrawal — always a DEBIT, always red
+  fx       → currency conversion — one DEBIT + one CREDIT across accounts
+  interest → interest credited — CREDIT, gold
+  notice   → notice period initiated/expired — neutral, no amount displayed
+
+DATA SOURCE:
+  mockMonetaryActivity → DB: monetaryTransactions WHERE clientId = {id}
+  ORDER BY transactionDate DESC LIMIT 10
+
+ADMIN CONTEXT:
+  • The RM creates all monetary accounts for a client — accounts don't exist
+    until the RM creates them
+  • The RM enters each transaction with its historical date
+  • Account balance is always computed from transactions, never stored directly
+  • Interest accruals can be entered manually by RM or auto-generated by a
+    scheduled job (if interest automation is configured per account)
+  • The RM can lock/unlock accounts — locked accounts block debits at API level
+  • FX rates on historical transactions are entered by RM (or looked up from
+    FXRateHistory for the transaction date)
+
+================================================================================
+  PAGE 2: SECURITIES PORTFOLIO
+  File: /app/dashboard/securities/page.tsx
+  Route: /dashboard/securities
+================================================================================
+
+PURPOSE: Detailed view of all equity and fixed income holdings. Shows positions,
+performance, sector allocation, and recent dividends/coupon activity.
+
+────────────────────────────────────────────────────────────────────────────────
+  KPI STRIP
+────────────────────────────────────────────────────────────────────────────────
+
+Hero card (2 cols): Total Securities Value
+  • Sum of all equity positions (shares × price) + bond positions (market value)
+  • "SEC" watermark text in green
+  • Trend: "+3.8% — 12-month return · 30.7% of total portfolio"
+
+KPI 1: YTD Return — combined equities + bonds
+  • weightedAverageReturn = Σ(positionValue × positionYTDReturn) / totalValue
+  • Sub: "Equities +4.1% · Bonds +0.6%" (sub-split)
+
+KPI 2: Unrealised P&L
+  • Σ(positionCurrentValue − positionCostBasis) across all positions
+  • Shown as "+CHF 103K" (thousands)
+
+────────────────────────────────────────────────────────────────────────────────
+  ALLOCATION BAR
+────────────────────────────────────────────────────────────────────────────────
+
+A horizontal split bar: Equities % (green) | Bonds % (blue)
+  • equityPct = equityTotalValue / securitiesTotalValue × 100
+  • bondPct   = bondTotalValue   / securitiesTotalValue × 100
+Below: exact CHF values and position counts for each
+
+────────────────────────────────────────────────────────────────────────────────
+  TAB SELECTOR: Equities (15) | Fixed Income (9)
+────────────────────────────────────────────────────────────────────────────────
+
+Equities tab (green) / Fixed Income tab (blue)
+Tabs are mutually exclusive — switching hides the current table and shows the other.
+Sector Breakdown panel is only visible when Equities tab is active.
+
+────────────────────────────────────────────────────────────────────────────────
+  EQUITIES TABLE (15 rows + totals footer)
+────────────────────────────────────────────────────────────────────────────────
+
+Columns: Name/Ticker | Shares | Value (CHF) | Weight | YTD | P&L
+
+Per row:
+  • Ticker abbreviation avatar (3-char, sector-coloured background)
+  • Full name + exchange + sector
+  • Shares held (integer, no decimals)
+  • CHF value (shares × current price in CHF)
+  • Weight % (positionValue / equityTotal × 100), with mini fill bar
+    bar width = weight / 8% × 100 (8% = capped max for visual scale)
+  • YTD return % (green/red with trend icon)
+  • Unrealised P&L in CHF (green/red)
+
+Totals footer: Total value, equity %, average YTD return, total P&L
+
+HOW EQUITY VALUES ARE COMPUTED:
+  currentValueCHF = shares × currentPriceCHF (current price entered by RM, or from feed)
+  costBasisCHF    = Σ(CREDIT amountChf) for shares currently held (FIFO)
+  P&L             = currentValueCHF − costBasisCHF
+
+SECTOR COLOURS:
+  Consumer Staples → green | Consumer → gold | Healthcare → blue
+  Technology → purple | Industrials → orange | Financials → dark blue
+
+────────────────────────────────────────────────────────────────────────────────
+  FIXED INCOME TABLE (9 rows + totals footer)
+────────────────────────────────────────────────────────────────────────────────
+
+Columns: Name/ISIN | Coupon | Maturity | YTM | Value (CHF) | Accrued
+
+Per row:
+  • "BOND" avatar (blue)
+  • Full bond name + ISIN + Moody's rating
+  • Annual coupon rate %
+  • Maturity date
+  • Yield to Maturity (YTM) — what the bond will return if held to maturity
+  • Market value in CHF (RM-entered, updated periodically)
+  • Accrued interest: (annualCoupon / 365) × daysSinceLastCoupon × nominalValueCHF
+
+Totals footer: total bond value, average YTM, total accrued interest
+
+KEY DISTINCTION from equities:
+  Bond VALUE ≠ face value (nominal). Bonds trade at a premium or discount.
+  The RM enters/updates the market value manually. No live price feed.
+  Accrued interest IS computed automatically from coupon rate + last coupon date.
+
+────────────────────────────────────────────────────────────────────────────────
+  SECTOR BREAKDOWN (equities tab only)
+────────────────────────────────────────────────────────────────────────────────
+
+Computed dynamically: group equities by sector, sum values, compute % of equityTotal.
+One row per sector: colour dot, sector name, proportional fill bar, %, CHF K value.
+Sorted by value descending (largest sector first).
+This is entirely derived — no separate data model needed, computed from equities array.
+
+────────────────────────────────────────────────────────────────────────────────
+  RECENT ACTIVITY
+────────────────────────────────────────────────────────────────────────────────
+
+Dividends received, coupon payments, bond purchases.
+Each row: type icon (green inbound / red outbound), description, detail line, CHF amount, date.
+DATA: mockSecuritiesActivity → DB: equityTransactions + bondTransactions
+ORDER BY transactionDate DESC LIMIT 8
+
+ADMIN CONTEXT:
+  • The RM enters each equity position as a CREDIT transaction with:
+    ticker, shares, priceAtDate, transactionDate
+  • Price for current positions: RM manually updates equity prices (no free feed)
+    They use the "Update price" action on each position in the admin panel
+  • Bond positions: RM enters nominal, coupon, maturity, rating, initial price
+    Then manually updates market price at each review period
+  • Dividends: entered as CREDIT transactions by RM or auto-generated if RM
+    sets up a recurring dividend schedule per equity position
+  • Coupon payments: same as dividends — RM-entered or auto-generated from
+    bond coupon schedule (date, amount = nominalValue × couponRate / frequency)
+
+================================================================================
+  PAGE 3: PRECIOUS METALS
+  File: /app/dashboard/metals/page.tsx
+  Route: /dashboard/metals
+================================================================================
+
+PURPOSE: Shows physical precious metals held in allocated vault storage —
+individual bars, vault locations, live spot prices, and acquisition history.
+
+────────────────────────────────────────────────────────────────────────────────
+  KPI STRIP
+────────────────────────────────────────────────────────────────────────────────
+
+Hero card: Total Metals Value
+  • Σ(metalHolding.troyOz × liveSpotPriceCHF) across all metals
+  • "XAU" watermark
+  • Trend: unrealised P&L % + portfolio allocation %
+
+KPI 1: Unrealised P&L
+  • Σ(currentValue − costBasis) across all metals in CHF
+  • costBasis = Σ(CREDIT transactions amountChf) for currently held oz
+
+KPI 2: YTD Return (Gold)
+  • Gold spot price change YTD only — not blended metals return
+  • Shows gold because it's the dominant metal (67.8% of metals allocation)
+
+────────────────────────────────────────────────────────────────────────────────
+  METAL SELECTOR (3 clickable cards: Gold | Silver | Platinum)
+────────────────────────────────────────────────────────────────────────────────
+
+One card per metal. Selecting a metal updates the detail panel below.
+Each card shows:
+  • Symbol (XAU / XAG / XPT), allocation % badge
+  • Troy oz held (e.g., 24.5 troy oz)
+  • CHF value (large serif)
+  • Daily change % (green/red with trend icon)
+Selected card: coloured background + coloured border outline
+
+────────────────────────────────────────────────────────────────────────────────
+  DETAIL PANEL (2 columns, updates on metal selection)
+────────────────────────────────────────────────────────────────────────────────
+
+LEFT: Spot Price Chart
+  • Current spot price in CHF (large, with "per troy oz · As of {date}" sub)
+  • SVG sparkline chart: 11-month price history (May–Mar)
+    X-axis labels every other month for readability
+    The chart uses the same SparkChart component with metal's brand colour
+  • Stats strip below chart (3 cells separated by dividers):
+      - Cost Basis per oz: costBasisCHF / troyOz held
+      - Unrealised P&L: currentValue − costBasis (green)
+      - Return YTD: spot price today vs spot price Jan 1 (%)
+  DATA: metal.priceHistory[] + metal.priceLabels[] from PriceHistory table
+  Live price: metals-api.com feed, refreshed every 15 min during market hours
+
+RIGHT: Bar Inventory
+  • Header: "Bar Inventory — {N} bar(s)"
+  • One row per physical bar:
+      - Bar symbol avatar (gold/silver/platinum colour)
+      - Weight (e.g., "400 oz") + form (e.g., "Good Delivery Bar")
+      - Fineness (e.g., "999.9") + reference number (e.g., "ZPF-AU-001")
+      - Vault location (with map pin icon)
+      - Acquisition date
+      - "Verified" badge (green) — means last physical audit confirmed the bar
+  • Vault info footer (3 rows):
+      - vault location (full address)
+      - insurance coverage (amount + insurer)
+      - last audit date + next scheduled audit date
+
+WHAT "ALLOCATED STORAGE" MEANS:
+  The client owns specific, identifiable bars. Their name is on the record for
+  bar ref ZPF-AU-001 etc. This is different from "pooled" or "unallocated"
+  storage where you just own a quantity claim with no specific bars assigned.
+  Allocated is higher security and trust — critical for private banking clients.
+
+────────────────────────────────────────────────────────────────────────────────
+  VAULT LOCATIONS (full width panel)
+────────────────────────────────────────────────────────────────────────────────
+
+2 location cards (Zürich HB + Geneva Free Port):
+  • Vault name + address
+  • Security rating (Grade X · 24/7 armed guard · Biometric access)
+  • Contents (which metals + quantities stored there)
+  • CHF value of all metals in that location
+
+DATA: hardcoded vault metadata, computed contents from metalHoldings.vault field
+
+────────────────────────────────────────────────────────────────────────────────
+  TRANSACTION HISTORY
+────────────────────────────────────────────────────────────────────────────────
+
+List of all metal purchases and sales, most recent first.
+Each row: icon (red outbound for purchases — cash went out), description,
+detail (e.g., "ZPF Metals desk · Spot + 0.35% · Vault: Zürich HB"), CHF amount, date.
+All current mock entries are CREDIT (purchases) — shown as red/outbound because
+from a cash perspective, cash left the account to buy the metal.
+DATA: mockMetalsActivity → DB: metalTransactions ORDER BY transactionDate DESC
+
+NOTE on transaction icon direction:
+  Metal purchases = DEBIT from monetary account + CREDIT to metal holding
+  The transaction history on this page shows the metal perspective (CREDIT = received metal)
+  but uses a red icon because the client "spent" money. This convention should be
+  consistent in production — document this in the UI so it's not confusing.
+
+ADMIN CONTEXT:
+  • Custody & Vault department registers each bar (not just the RM)
+  • Bar records include: refinery, serial number, assay certificate reference
+  • Physical audits are conducted every 6 months — Custody staff logs audit results
+  • Insurance is managed by the RM and updated in the system record
+  • Spot prices come from a live feed — Custody staff can override if the feed
+    is down (manual override logged in audit trail)
+  • "Download Vault Certificate" button → generates PDF listing all bars,
+    their specifications, vault locations, and last audit confirmation
+
+================================================================================
+  PAGE 4: DIGITAL ASSETS
+  File: /app/dashboard/digital/page.tsx
+  Route: /dashboard/digital
+================================================================================
+
+PURPOSE: Shows Bitcoin and Ethereum holdings in institutional cold storage —
+spot prices, custody details, acquisition history, and a risk notice.
+
+────────────────────────────────────────────────────────────────────────────────
+  RISK NOTICE BANNER
+────────────────────────────────────────────────────────────────────────────────
+
+Always shown at top (orange/amber coloured, cannot be dismissed):
+  "Digital assets are highly volatile and unregulated. Your allocation represents
+  6.3% of total portfolio — within your agreed risk mandate. All holdings are
+  held in institutional cold storage under ZPF custody and are not lent or
+  rehypothecated."
+
+The 6.3% allocation is computed dynamically (same as portfolio page).
+"Not lent or rehypothecated" — critical legal statement: ZPF does not lend out
+the client's crypto to generate yield. The client's BTC is in cold storage,
+not on an exchange, not in a lending protocol.
+
+────────────────────────────────────────────────────────────────────────────────
+  KPI STRIP
+────────────────────────────────────────────────────────────────────────────────
+
+Hero card: Total Digital Assets Value
+  • Σ(holdings × spotPriceCHF) for BTC + ETH
+  • "₿" watermark
+  • Trend: unrealised P&L in CHF + % (red if negative)
+
+KPI 1: Unrealised P&L
+  • Σ(currentValue − costBasis) — often negative for crypto (volatile)
+  • DATA: Σ(digitalAsset.unrealisedPnl)
+
+KPI 2: 30-Day Return
+  • Combined 30-day % return weighted by holding value
+  • Not period-selectable — fixed 30-day (crypto moves fast, longer periods
+    less relevant for risk monitoring)
+
+────────────────────────────────────────────────────────────────────────────────
+  ASSET SELECTOR (2 cards: BTC | ETH)
+────────────────────────────────────────────────────────────────────────────────
+
+One card per digital asset. Clicking selects it and updates the detail panel.
+Each card:
+  • Asset symbol icon (B / E coloured)
+  • Name + network (e.g., "Bitcoin · BTC · Bitcoin (BTC)")
+  • Allocation % badge
+  • Holdings (e.g., 7.40 BTC) — large display number
+  • CHF value
+  • Live spot price in CHF with daily change %
+
+────────────────────────────────────────────────────────────────────────────────
+  DETAIL PANEL (2 columns)
+────────────────────────────────────────────────────────────────────────────────
+
+LEFT: Spot Price Chart (same SVG spark structure as metals page)
+  • Current spot price per unit (BTC or ETH)
+  • 11-month price history sparkline
+  • Stats: Cost Basis per unit | Unrealised P&L | 1Y Return
+
+RIGHT: Custody Details + Acquisition History
+  Custody:
+    • Wallet type (e.g., "Air-gapped hardware · HSM-grade")
+    • Custody setup (e.g., "ZPF Institutional Cold Storage · Multisig 3-of-5")
+    • Custody reference number
+  Security note:
+    "Assets held in air-gapped cold storage. Private keys are never exposed to
+    networked systems. No lending, staking, or rehypothecation without explicit
+    client instruction."
+  Acquisition History (per asset):
+    • List of all purchase lots (date, quantity, price at date, reference ID)
+    • This is the cost basis history — each lot's price drives FIFO P&L
+
+WHAT "3-OF-5 MULTISIG" MEANS:
+  Private keys are split across 5 hardware wallets. Any 3 must sign to authorise
+  a transaction. No single person can move the funds alone. This is the gold
+  standard for institutional crypto custody.
+
+────────────────────────────────────────────────────────────────────────────────
+  TRANSACTION HISTORY
+────────────────────────────────────────────────────────────────────────────────
+
+All crypto transactions: on-chain custody transfers received, purchases, sales.
+Each row: direction icon (green inbound, red outbound), description, detail, amount/date.
+For transfers received: amount shown as "+{quantity} {symbol}" — CHF value at receipt.
+DATA: mockDigitalActivity → DB: digitalAssetTransactions ORDER BY transactionDate DESC
+
+ADMIN CONTEXT:
+  • The RM records each crypto acquisition as a CREDIT transaction:
+    - asset (BTC/ETH), quantity, priceAtDate (CHF), transactionDate, custodyRef
+  • Live prices from CoinGecko API — updated every 15 min
+  • Custody operations (Custody & Vault department) manage the cold wallets
+  • "Download Custody Statement" → PDF with holdings, custody refs, last audit
+  • If a client wants to add crypto to their portfolio, the RM records it —
+    the client does NOT send crypto directly to ZPF (no deposit addresses shown)
+
+================================================================================
+  PAGE 5: REAL ESTATE HOLDINGS
+  File: /app/dashboard/real-estate/page.tsx
+  Route: /dashboard/real-estate
+================================================================================
+
+PURPOSE: Shows property holdings with valuations, acquisition costs, P&L,
+title deed custody status, and valuation history.
+
+────────────────────────────────────────────────────────────────────────────────
+  VALUATION NOTICE BANNER
+────────────────────────────────────────────────────────────────────────────────
+
+Shown when any property's lastValuationDate is "Pending" or > 12 months ago:
+  "Independent Q4 2025 valuations are currently in progress for both properties.
+  Current figures are estimated and will be updated upon receipt of formal
+  appraisal reports. Contact your Relationship Manager for interim assessments."
+
+The word "estimated" is important — real estate values on this page are NOT
+live prices. They are point-in-time appraisals. Until a new appraisal is
+received, values are the last confirmed figures.
+
+────────────────────────────────────────────────────────────────────────────────
+  KPI STRIP
+────────────────────────────────────────────────────────────────────────────────
+
+Hero card: Total Estimated Value
+  • Σ(property.valuationCHF) — sum of last confirmed valuations
+  • "RE" watermark
+  • "+CHF {totalPnl} (+{pct}%) above acquisition cost · 10.9% of portfolio"
+
+KPI 1: Unrealised Gain — total appreciation above acquisition costs
+KPI 2: Acquisition Cost — combined cost basis, neutral colour (cream, not green)
+
+────────────────────────────────────────────────────────────────────────────────
+  PROPERTY CARDS (one per property, stacked vertically)
+────────────────────────────────────────────────────────────────────────────────
+
+Each property card is a 2-column layout:
+
+LEFT SIDE:
+  • Property type badge + icon (house for residential, layers for land)
+  • Status label: "Owner-occupied" (green) or "Undeveloped" (gold)
+  • Property name (serif display)
+  • Address with map pin icon
+  • "Estimated Value" in large serif: CHF {valuationCHF}
+  • Local currency value (e.g., "₦ 1,480,000,000") + valuation status note
+  • Gain pill: "+CHF {gain} ({gainPct}%) since {acquisitionDate}"
+
+RIGHT SIDE (Property Details):
+  • Land area, built area (if residential), bedrooms/bathrooms (if residential)
+  • Acquisition date, cost basis in CHF, title reference number
+  • Features tags: e.g., "Private pool", "Commercial zoning" etc.
+  • Footer: "Title deed secured · ZPF vault · No encumbrances"
+
+VALUATION LOGIC:
+  valuationCHF = last confirmed independent appraisal value (CHF)
+  unrealisedGain = valuationCHF − acquisitionCHF
+  gainPct = unrealisedGain / acquisitionCHF × 100
+  No live market price — the RM manually updates valuationCHF after each appraisal
+
+────────────────────────────────────────────────────────────────────────────────
+  TITLE DOCUMENTS IN CUSTODY
+────────────────────────────────────────────────────────────────────────────────
+
+2-column panel. One column per property:
+  • FileText icon (green)
+  • Title: "Title Deed — {property name}"
+  • Reference: vault reference number
+  • Lodged date: when the physical deed was lodged with ZPF
+  • Encumbrances: "None" (or description if mortgage/lien exists)
+  • Status badge: "Secured" (green) + storage badge: "Physical + Digital"
+
+This confirms to the client that ZPF holds their property deeds in their vault.
+It is a key trust element — physical deeds are in ZPF custody, not with the
+client or a local lawyer, reducing risk of title fraud.
+
+────────────────────────────────────────────────────────────────────────────────
+  VALUATION HISTORY TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+Grouped by property. Each property has a header row (name + building icon),
+then one row per valuation event:
+  • Date | Note (e.g., "Full independent valuation") | CHF value | % gain since acquisition
+
+The most recent row is highlighted in gold (shows latest estimated value).
+% gain is always vs acquisition cost (the original purchase price) — NOT vs previous valuation.
+
+DATA: property.valuationHistory[] → DB: propertyValuations ORDER BY date ASC
+
+ADMIN CONTEXT:
+  • The RM enters each property acquisition as a transaction with:
+    - address, type, acquisitionDate, acquisitionCHF, localCurrencyValue
+  • Title deeds are lodged and managed by Custody & Vault department
+  • Valuations are entered by the RM after receiving an independent appraisal report
+  • Each valuation entry: date, valueCHF, valuationNote, appraiser name
+  • The RM cannot fabricate valuations — each one should reference an
+    external appraisal document lodged in the vault (linked document)
+  • "Download Property Report" → PDF with all properties, valuations, title status
+
+================================================================================
+  END OF ASSET PAGES SPEC
+================================================================================

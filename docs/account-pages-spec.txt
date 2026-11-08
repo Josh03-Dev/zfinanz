@@ -1,0 +1,834 @@
+ACCOUNT PAGES SPECIFICATION
+ZPF Private Wealth Portal — Account & Utility Pages
+====================================================
+
+Pages covered:
+  1. Notifications       /dashboard/notifications
+  2. Transactions        /dashboard/transactions
+  3. Beneficiaries       /dashboard/beneficiaries
+  4. Profile             /dashboard/profile
+  5. Settings            /dashboard/settings
+  6. Security            /dashboard/security
+  7. Trustees            /dashboard/trustees
+  6. Security            /dashboard/security
+
+
+════════════════════════════════════════════════════════════════════════
+1. NOTIFICATIONS PAGE  (/dashboard/notifications)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Central inbox for all system-generated and admin-generated alerts. Notifies
+the client of activity across every domain (transfers, documents, messages,
+KYC, security) without requiring them to poll individual pages. Unread count
+is surfaced in the global nav badge.
+
+DATA SOURCE
+-----------
+Notifications table in the database. Each row stores: id, type, title, body,
+category, href, isRead, createdAt. Populated by server-side event emitters
+triggered by status transitions in other domains (e.g. transfer approved,
+statement generated, message received).
+
+NOTIFICATION TYPES
+------------------
+9 distinct types, each with a dedicated icon and colour:
+
+  Type                  Icon colour   Category      Destination (href)
+  ─────────────────────────────────────────────────────────────────────
+  NEW_MESSAGE           blue          messages      /dashboard/messages
+  TRANSFER_APPROVED     green         transfers     /dashboard/transfers
+  TRANSFER_REJECTED     red           transfers     /dashboard/transfers
+  TRANSFER_EXECUTED     green         transfers     /dashboard/transfers
+  DOCUMENT_LODGED       gold          documents     /dashboard/vault
+  STATEMENT_READY       navy          statements    /dashboard/statements
+  SECURITY_ALERT        red           security      /dashboard/security
+  KYC_EXPIRING          amber         security      /dashboard/profile
+  BENEFICIARY_PROPOSED  gold          transfers     /dashboard/beneficiaries
+
+FILTER TABS
+-----------
+Seven tabs filter the notification list. Active tab is highlighted with the
+gold underline. Tab counts show unread items only.
+
+  Tab          Filters by
+  ─────────────────────────────────────────────────
+  All          No filter — all notifications
+  Unread       isRead === false
+  Messages     category === "messages"
+  Transfers    category === "transfers"
+  Security     category === "security"
+  Statements   category === "statements"
+  Documents    category === "documents"
+
+UNREAD INDICATOR
+----------------
+Each unread notification row carries a 5 px gold dot on the left edge
+(absolute positioned). The dot disappears once the notification is marked read.
+The global navigation bell icon shows the total unread count as a badge.
+
+NOTIFICATION ROW ANATOMY
+-------------------------
+Each row renders:
+  - Colour-coded icon (left)
+  - Unread dot (gold, absolute left edge, hidden if isRead)
+  - Title (semi-bold)
+  - Category badge (pill, muted colour per category)
+  - Body text (muted, truncated to 2 lines)
+  - Relative date (e.g. "2 hours ago", "Yesterday", ISO date for older)
+  - ChevronRight arrow — clicking the row navigates to notif.href
+
+READ ACTIONS
+------------
+markRead(id)
+  Marks a single notification as read. Called on row click or explicit
+  "Mark as read" action. Updates isRead = true in the database and removes
+  the unread dot. Decrements the nav badge count.
+
+markAllRead()
+  Bulk action button in the page header. Sets isRead = true for all
+  notifications in the current client's inbox. Clears the nav badge entirely.
+
+  NOTE: Both functions currently update client-side React state. The spec
+  requires these to persist to the database via a PATCH /api/notifications
+  endpoint to survive page refresh.
+
+EMPTY STATE
+-----------
+When no notifications match the active filter tab, a centred illustration
+with the message "No notifications" is shown. If the unread tab is active and
+empty: "You're all caught up."
+
+ADMIN CONTEXT
+-------------
+Admins (RM/Major/Super) see notifications scoped to their own administrative
+actions (e.g. approval requests queued for them, counter-approval alerts,
+compliance deadline reminders). Client-facing notifications are not visible
+in the admin panel — admins view them only when impersonating a client account
+(Super Admin only feature).
+
+
+════════════════════════════════════════════════════════════════════════
+2. TRANSACTIONS PAGE  (/dashboard/transactions)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Unified ledger view of every transaction across all asset classes and service
+domains in the client's portfolio. Replaces the need to visit each asset page
+individually to review activity history. Supports search, filtering, grouping,
+and CSV export.
+
+DATA SOURCE
+-----------
+Transactions table joined across all asset class sub-tables. Each record
+includes: id, ref, assetClass, category, name, detail, amount, currency,
+dateISO, direction (CREDIT/DEBIT). Amounts are normalised to CHF using the
+prevailing FX rate at the transaction date for display purposes.
+
+TRANSACTION CATEGORIES
+----------------------
+7 categories, each with a distinct icon and colour:
+
+  Category    Icon colour   Covers
+  ──────────────────────────────────────────────────────────────────────
+  inbound     green         deposits, dividends, interest received, buys
+  outbound    red           withdrawals, fees, sells, distributions
+  interest    blue          accrued interest credits (bonds, monetary)
+  fx          gold          foreign exchange conversions
+  custody     muted navy    custody fees, safekeeping charges
+  document    amber         document lodgement, vault activity
+  notice      muted gold    system notices, compliance events
+
+ASSET CLASS FILTER
+------------------
+Second filter dimension applied alongside category:
+
+  monetary | securities | metals | digital | real-estate | vault
+
+Both filters are independent. The combined result is the intersection of
+matching category AND matching asset class. "All" is the default for both.
+
+TEXT SEARCH
+-----------
+Free-text input searches across three fields simultaneously:
+  - name       (asset name, counterparty name)
+  - ref        (transaction reference number)
+  - detail     (description / narrative)
+
+Search is case-insensitive. Applied after category and asset class filters.
+No minimum character requirement; the result set updates on every keystroke
+(client-side filter on the already-fetched dataset).
+
+DATE GROUPING (groupByMonth)
+----------------------------
+After all filters are applied, results are grouped by calendar month using
+the groupByMonth() function:
+
+  1. Split dateISO on '-' → extract year and month index
+  2. Format as "Month YYYY" (e.g. "March 2024")
+  3. Group transactions into buckets by that key
+  4. Render each group with a sticky month header dividing the rows
+
+Groups are ordered newest first (reverse chronological). Within each group,
+transactions are ordered by dateISO descending.
+
+SUMMARY CARDS
+-------------
+Three summary cards above the transaction list. Values recompute whenever
+filters change:
+
+  Card            Value
+  ─────────────────────────────────────────────────────────────────────
+  Total Count     Count of filtered transactions (integer)
+  Total Inbound   Sum of filtered inbound transaction amounts in CHF
+  Total Outbound  Sum of filtered outbound transaction amounts in CHF
+
+Amounts are always displayed in CHF regardless of the original transaction
+currency. The original currency and FX rate are shown in the row detail.
+
+TRANSACTION ROW ANATOMY
+-----------------------
+Each row shows:
+  - Category icon (coloured)
+  - Asset class badge (small pill)
+  - Transaction name (semi-bold)
+  - Reference number (DM Mono, muted)
+  - Detail/narrative (truncated, muted)
+  - Date (DM Mono, right-aligned)
+  - Amount (DM Mono, right-aligned, green if inbound / red if outbound)
+
+Clicking a row expands an inline detail panel showing the full narrative,
+original currency amount, FX rate applied, and a link to the relevant asset
+page for that transaction.
+
+EXPORT CSV
+----------
+"Export CSV" button in the page header exports all currently filtered
+transactions (not the full unfiltered dataset) as a comma-separated file.
+Columns: ref, date, assetClass, category, name, detail, amount (CHF),
+originalAmount, originalCurrency, fxRate.
+
+ONBOARDING ANCHOR ENFORCEMENT
+------------------------------
+No transaction in this list will have a dateISO earlier than the client's
+onboardedAt date. The database CHECK constraint, API validation, and RM
+entry form all enforce this floor. Any attempt to display a transaction
+pre-dating onboardedAt indicates a data integrity error and should be flagged
+to Super Admin.
+
+ADMIN CONTEXT
+-------------
+RM Admins can view the transaction history of their own clients by navigating
+to that client's record in the admin panel. The same page renders in a
+read-only "admin view" mode with a client-name banner at the top. RMs cannot
+delete transactions; corrections are handled by posting a reversing entry.
+Super Admins can view any client's transaction history.
+
+
+════════════════════════════════════════════════════════════════════════
+3. BENEFICIARIES PAGE  (/dashboard/beneficiaries)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Registry of all approved third-party recipients to whom the client may
+instruct transfers. Beneficiaries are managed by the RM on the client's
+behalf; the client views them here in read-only mode. Suspended beneficiaries
+block transfer instructions until resolved.
+
+DATA SOURCE
+-----------
+Beneficiaries table: id, clientId, fullName, relation, status, ref, bankName,
+country, iban, swiftBic, currency, addedDate, lastUsedDate, transferCount,
+verifiedBy, notes.
+
+STATUSES
+--------
+Three statuses reflect the beneficiary's current compliance state:
+
+  Status                Icon                  Colour
+  ──────────────────────────────────────────────────
+  active                CheckCircle2          green
+  pending-verification  Clock                 gold (amber)
+  suspended             AlertTriangle         red
+
+  active               Transfers can be instructed to this beneficiary.
+  pending-verification Beneficiary has been proposed but identity verification
+                       and RM co-authorisation are not yet complete. Cannot be
+                       selected in transfer instructions. Activation takes up
+                       to 5 business days.
+  suspended            Beneficiary has been flagged by compliance or RM. All
+                       transfers to this beneficiary are blocked. Client sees
+                       a "Contact RM to Resolve" button on the expanded row.
+
+RELATION TYPES
+--------------
+8 types, each with a distinct icon:
+
+  trust | business | spouse | sibling | child | parent | charity | self
+
+The relation type is displayed as a labelled icon badge on each row.
+"self" denotes the client's own external account at another institution.
+
+EXPANDABLE ROWS
+---------------
+Each beneficiary row expands on click to reveal the full record:
+
+  Field           Content
+  ─────────────────────────────────────────────────────────────────────
+  ref             Internal beneficiary reference (DM Mono)
+  bankName        Name of the receiving bank
+  country         ISO country name + flag emoji
+  iban            Full IBAN (DM Mono, formatted in groups of 4)
+  swiftBic        SWIFT/BIC code (DM Mono)
+  currency        Default transfer currency for this beneficiary
+  addedDate       Date the beneficiary was registered
+  lastUsedDate    Date of most recent transfer to this beneficiary
+  transferCount   Total count of completed transfers
+  verifiedBy      Name of the RM who performed identity verification
+  notes           RM-entered free text (compliance observations, restrictions)
+
+COMPLIANCE NOTICE
+-----------------
+A persistent amber notice block appears at the top of the page:
+
+  "Adding or amending beneficiaries requires identity verification and
+   RM co-authorisation. New beneficiaries may take up to 5 business days
+   to activate."
+
+This is always visible regardless of the current beneficiary list state.
+
+SUSPENDED RESOLUTION
+--------------------
+When a beneficiary row is expanded and its status is suspended, a
+"Contact RM to Resolve" button is shown. Clicking this button opens a
+pre-populated message to the RM's department in /dashboard/messages with
+the beneficiary's name and ref pre-filled in the subject.
+
+ADD BENEFICIARY (client-facing)
+-------------------------------
+An "Add Beneficiary" button in the page header opens a form or initiates a
+secure message to the RM. The client cannot add beneficiaries directly —
+the form triggers an RM workflow. The actual creation and status assignment
+is performed by the RM Admin in the admin panel.
+
+ADMIN CONTEXT (RM Admin)
+------------------------
+RM Admins manage beneficiaries for their clients in the admin panel:
+  - Create new beneficiary records (status defaults to pending-verification)
+  - Upload identity verification documents (stored in vault)
+  - Transition status: pending-verification → active (after verification complete)
+  - Suspend a beneficiary (status → suspended, reason field required)
+  - Edit bank details and notes
+  - Deletion is not permitted; records are retained for audit purposes
+
+Major Admin counter-approval is required for any beneficiary status change
+on accounts above the Major Admin's asset threshold.
+
+
+════════════════════════════════════════════════════════════════════════
+4. PROFILE PAGE  (/dashboard/profile)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Read-only display of the client's personal identity, account structure, RM
+assignment, and custodian details. Serves as the canonical reference for the
+client to confirm their profile information is correct. All data is
+admin-managed; clients have no edit capability on this page.
+
+DATA SOURCE
+-----------
+Clients table: id, fullName, clientId, nationality, dateOfBirth, passportNumber,
+kycStatus, kycExpiry, riskProfile, accountType, onboardedAt, domicile,
+taxResidency, currency, language. Joined with Users (RM assignment) and
+Custodians tables.
+
+PROFILE HERO
+------------
+Top section displaying the client's identity at a glance:
+
+  - 72 px initials avatar (navy background, cream text, DM Sans bold)
+    Initials: first letter of firstName + first letter of lastName
+  - fullName (Cormorant Garamond, 28px, display weight)
+  - clientId (DM Mono, muted, prefixed "ZPF-")
+  - 4 status pills displayed inline:
+      KYC status       (verified/expired/pending — green/red/amber)
+      Risk profile     (conservative/balanced/growth/aggressive — styled)
+      Account type     (individual/joint/trust/corporate — styled)
+      Domicile country (ISO country name)
+  - "Client Since" date: formatted as "DD Month YYYY", derived from onboardedAt
+
+KYC EXPIRY LOGIC
+----------------
+kycExpiry is a stored date. The page computes:
+
+  daysToKycExpiry = Math.ceil((kycExpiry - today) / msPerDay)
+
+  If daysToKycExpiry < 180:
+    Display an amber warning banner: "KYC renewal due in N days. Your
+    Relationship Manager will contact you to arrange the required documentation."
+  If kycExpiry < today:
+    KYC pill shows "expired" in red. Transfer and vault operations may be
+    restricted until renewal is complete (enforced at API level).
+  If daysToKycExpiry >= 180: no banner shown; KYC pill shows "verified" in green.
+
+4-SECTION GRID (2-column layout)
+---------------------------------
+
+  Section 1 — Identity
+  ────────────────────
+  Contains a lock badge labelled "Admin-Managed" to communicate that the
+  client cannot edit this data.
+  Fields: Full name, Date of birth, Nationality, Passport/ID number (masked),
+          Tax residency, Domicile country.
+  Passport number is partially masked: first 2 and last 2 characters visible,
+  remainder replaced with •••.
+
+  Section 2 — Account Details
+  ────────────────────────────
+  Fields: Client ID (DM Mono), Account type, Risk profile, Preferred currency,
+          Preferred language, Account status (active/restricted/dormant),
+          Onboarded at (the anchor date — displayed as "DD Month YYYY").
+  Account status badge: active (green), restricted (amber), dormant (muted).
+
+  Section 3 — Relationship Manager
+  ──────────────────────────────────
+  Fields: RM full name, RM title/role, RM direct email, RM phone (partially
+          masked), Office location, Next scheduled review date.
+  Includes a "Send Message" shortcut that opens /dashboard/messages pre-routed
+  to the RM department category.
+
+  Section 4 — Custodian
+  ──────────────────────
+  Fields: Custodian institution name, Custodian account reference, Sub-custodian
+          (if any), Custody agreement date, Custodian contact email.
+  This section is informational only; the client's assets are held in the
+  custodian's name per the custody agreement.
+
+QUICK LINKS
+-----------
+Two shortcut cards at the bottom of the page:
+  - → Settings & Preferences   /dashboard/settings
+  - → Security & Access        /dashboard/security
+
+ADMIN CONTEXT
+-------------
+RM Admins edit client profile data in the admin panel (not visible here).
+All edits require the RM to enter a reason and are logged to the audit trail.
+KYC document uploads are performed via the Vault. Changing onboardedAt is
+restricted to Super Admins only (due to its effect on the full financial
+calculation history — see portfolio-page-spec.txt Appendix A1).
+
+
+════════════════════════════════════════════════════════════════════════
+5. SETTINGS PAGE  (/dashboard/settings)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Client-controlled preferences for display, notification delivery, statement
+format, and registered contact details. Settings that affect layout or currency
+display take effect immediately on save without a page reload. PII contact
+details are read-only and can only be updated via a formal RM-assisted request.
+
+DATA SOURCE
+-----------
+ClientPreferences table (1-to-1 with Clients): displayCurrency, language,
+dateFormat, theme, emailNotifications (JSON), smsNotifications (JSON),
+pushNotifications (JSON), statementDelivery, statementFormat.
+Contact details (email, phone) stored in Clients table — read from there but
+not editable here.
+
+SETTING GROUPS
+--------------
+
+  Group 1 — Display Preferences
+  ──────────────────────────────
+  displayCurrency   Select: CHF (default) | USD | EUR | GBP
+                    Affects: all monetary values shown across the portal.
+                    The underlying data is always stored in CHF; conversion
+                    uses the latest FX rate (15-min refresh, same feed as the
+                    monetary assets page).
+
+  language          Select: English | Deutsch | Français
+                    Affects: UI labels, date formatting locale, generated
+                    statement language. Changing language triggers a full
+                    page re-render with the selected locale bundle.
+
+  dateFormat        Radio: DD/MM/YYYY | MM/DD/YYYY | YYYY-MM-DD
+                    Affects: all date displays across the portal.
+
+  theme             Radio: Dark (default) | Light (coming soon) | System
+                    "Light" option is visible but disabled with a "Coming soon"
+                    label. System follows the OS preference. Only Dark is
+                    fully implemented.
+
+  Group 2 — Notification Preferences
+  ────────────────────────────────────
+  Email notifications (4 toggles):
+    - Transfer updates       (default: on)
+    - Document lodgements    (default: on)
+    - Statement availability (default: on)
+    - Security alerts        (default: on — cannot be disabled by client;
+                               the toggle is rendered disabled/locked)
+
+  SMS notifications (2 toggles):
+    - Transfer execution confirmations  (default: on)
+    - Security alerts                   (default: on — locked, cannot disable)
+
+  Push notifications (1 toggle):
+    - All alerts (default: off; rendered disabled — "Coming soon")
+
+  Group 3 — Statement Delivery
+  ─────────────────────────────
+  delivery    Radio: Portal only | Email | Post
+              "Post" option triggers a physical mail workflow in the admin panel
+              when a statement is generated. Address used: registered domicile
+              address from the Clients table.
+
+  format      Radio: PDF only | PDF + CSV
+              "PDF + CSV" attaches both formats to email delivery or makes both
+              available for portal download. Post delivery is PDF only regardless
+              of this setting.
+
+  Group 4 — Registered Contact Details
+  ──────────────────────────────────────
+  Read-only display of:
+    - Email address (masked: first 2 chars + *** + @domain)
+    - Phone number  (masked: country code + *** + last 3 digits)
+
+  A "Request Contact Update" button opens a pre-populated message to the
+  RM/Operations department via /dashboard/messages. Contact detail changes
+  require identity re-verification per KYC policy.
+
+SAVE BUTTON BEHAVIOUR
+---------------------
+A single "Save Preferences" button covers Groups 1–3 (contact details are
+not saved here). On click:
+  1. POST /api/preferences with the full preferences payload
+  2. Button label transitions to "✓ Saved" (green checkmark)
+  3. After 2200 ms the button reverts to "Save Preferences"
+  4. If the API call fails, the button shows "Error — try again" in red
+
+Changes to displayCurrency take effect globally on the next data fetch cycle
+(on navigation or manual refresh). Language changes reload the page with the
+new locale applied.
+
+ADMIN CONTEXT
+-------------
+RM Admins can view but not override a client's preferences in the admin panel.
+If a client's language preference is set to Deutsch or Français, generated
+statements and system emails are sent in that language. Super Admins can reset
+all preferences to defaults.
+
+
+════════════════════════════════════════════════════════════════════════
+6. SECURITY PAGE  (/dashboard/security)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Comprehensive security management hub. Displays the client's current security
+posture as a score, manages multi-factor authentication methods, shows active
+session inventory, surfaces login history, and provides credential management.
+This page is the client's primary interface for protecting account access.
+
+DATA SOURCE
+-----------
+Users table (passwordHash, lastPasswordChange), Sessions table (device,
+browser, os, location, ipAddress, lastActive, isCurrent), LoginEvents table
+(timestamp, outcome, ipAddress, device, location), TwoFactorMethods table
+(type, isActive, isPrimary, configuredAt), RecoveryCodes table (code,
+isUsed).
+
+SECURITY SCORE
+--------------
+Displayed as an SVG ring (donut chart) with the score number in the centre.
+Score is 82/100 labelled "Strong" in the current implementation.
+
+Score is calculated from a checklist of 6 security items. Each item has a
+weight; the sum of completed item weights = the score.
+
+  Item                                  Status    Weight
+  ─────────────────────────────────────────────────────
+  Strong password set                   done        15
+  Email notifications enabled           done        10
+  SMS two-factor active                 done        20
+  Authenticator app configured          done        20
+  Biometric authentication configured   not done    15
+  Recovery codes generated              done        20
+
+  Max score: 100. Current score: 85 (biometric not configured → −15 points;
+  the UI shows 82 which may reflect a rounding or partial-credit variant).
+
+  Score thresholds:
+    0–49    Weak     (red ring)
+    50–69   Fair     (amber ring)
+    70–84   Good     (gold ring)
+    85–100  Strong   (green ring)
+
+TWO-FACTOR AUTHENTICATION METHODS
+----------------------------------
+Three 2FA method cards:
+
+  Method        Status            Notes
+  ──────────────────────────────────────────────────────────────────────
+  SMS           primary, active   Sends OTP to registered phone on login.
+                                  Cannot be disabled if it is the only active
+                                  2FA method — would leave account unprotected.
+  Authenticator active            TOTP via RFC 6238 (30-second window).
+  (TOTP app)                      Managed via otplib on the server. Client
+                                  scans a QR code to enrol a compatible app.
+  Biometric     not configured    Device-level WebAuthn/FIDO2. Not yet
+                                  implemented; card shown with "Set up" button
+                                  that links to a coming-soon state.
+
+Each active method card shows: method name, status badge, configuredAt date,
+and a "Manage" button. Managing TOTP allows the client to re-scan the QR code
+or disable the method (only if another active method exists).
+
+ACTIVE SESSIONS
+---------------
+Table of all currently authenticated sessions for this client's account.
+
+Columns per session row:
+  - Device name / model
+  - Operating system
+  - Browser name
+  - Approximate location (city, country — derived from IP geolocation)
+  - IP address (masked to x.x.x.XXX)
+  - Last active (relative time, e.g. "3 minutes ago")
+  - Current indicator: the active session has a "This device" badge instead
+    of a Revoke button
+
+Actions:
+  Revoke (per session)    Terminates that specific session. The session token
+                          is invalidated in the Sessions table. The affected
+                          device will be logged out on next request.
+
+  Revoke All Other        Terminates all sessions except the current one.
+  Sessions                Confirmation prompt appears before executing.
+
+revokedSessions state is managed client-side to immediately hide revoked
+rows. The PATCH /api/sessions/revoke API call persists the revocation.
+
+LOGIN HISTORY
+-------------
+The 6 most recent login events are shown in a table. Events are not paginated
+on this page; the full history is accessible via the admin panel.
+
+Columns:
+  - Outcome icon: success (green CheckCircle2) | blocked (red AlertTriangle)
+  - Date + time (DM Mono, full ISO timestamp displayed in local timezone)
+  - Device / browser
+  - Location
+  - IP address
+
+"Blocked" events include: wrong password, invalid OTP, account locked, and
+suspicious IP detection. Blocked events do not create a session but are
+always logged to the LoginEvents table.
+
+CREDENTIALS — CHANGE PASSWORD
+------------------------------
+A card prompting the client to update their password.
+
+Fields:
+  - Current password (required for verification)
+  - New password     (minimum 12 characters, must include upper, lower,
+                      digit, and symbol)
+  - Confirm new password
+
+On submit: POST /api/auth/change-password. Server verifies current password
+against Argon2 hash, validates new password policy, hashes new password with
+Argon2, updates passwordHash + lastPasswordChange, and invalidates all other
+sessions (forces re-login on other devices).
+
+CREDENTIALS — RECOVERY CODES
+-----------------------------
+A card for emergency account recovery. Recovery codes bypass 2FA and are
+intended for situations where the client has lost access to their 2FA device.
+
+  showRecovery state (boolean, default false)
+
+  When false: "Reveal recovery codes" button shown.
+  When true: 6 recovery codes displayed in a 2-column grid (DM Mono, mono
+             format e.g. XXXX-XXXX-XXXX). A "Hide codes" button and a
+             "Regenerate codes" button are shown.
+
+Recovery codes:
+  - Generated at account creation and stored as Argon2 hashes
+  - Each code is single-use — marked isUsed = true once consumed
+  - Regenerating codes: POST /api/auth/recovery-codes/regenerate — invalidates
+    all existing codes and generates a fresh set of 6
+
+ADMIN CONTEXT
+-------------
+RM Admins cannot view a client's 2FA configuration, recovery codes, or
+password. They can:
+  - View login history (including blocked events) in the admin panel
+  - Force a session revocation on all devices (for emergency lockout)
+  - Trigger a password reset email (via Super Admin only)
+  - View the security score as a read-only field on the client overview card
+
+Super Admins can unlock a rate-limited/blocked account and override the
+2FA requirement for a single login cycle (emergency access, requires audit
+log entry with justification).
+
+
+════════════════════════════════════════════════════════════════════════
+7. TRUSTEES PAGE  (/dashboard/trustees)
+════════════════════════════════════════════════════════════════════════
+
+PURPOSE
+-------
+Displays all trustees registered on the client's account. A trustee is a
+named individual granted full portal access on behalf of the primary client.
+Trustees have identical access to the portal — same pages, same data — with
+a visible "Trustee" badge indicating their role. This page is only visible
+to the primary client. It is hidden from trustee sessions.
+
+DATA SOURCE
+-----------
+Trustees table: id, clientId, fullName, initials, relation, nationality,
+domicile, dateOfBirth, phoneNumber, status, accessLevel, kycStatus,
+kycVerifiedAt, kycExpiresAt, onboardedAt, addedBy, notes.
+
+TRUSTEE SYSTEM — CORE RULES
+----------------------------
+1. The trustee portal is identical to the client portal — same pages, same
+   data, same layout. No restricted or simplified view.
+
+2. When a trustee is logged in:
+   - The topbar greeting shows the trustee's own name + a gold "Trustee ·
+     [Client Name]" badge inline with the greeting
+   - The profile dropdown shows their own name, "Trustee" role badge, and
+     "Acting on behalf of [Client Name]"
+   - The sidebar bottom card shows the trustee's own first name + "Trustee"
+     badge and their sub-ID (ZPF-XXXX-XXXX-T0X)
+   - The "Trustees" sidebar item is hidden — trustees never see who else
+     is a trustee on the account
+
+3. Session model:
+   - Trustee session carries: role = 'trustee', their own userId (sub-ID),
+     name, initials, linkedClientId (the primary account's ID), and
+     linkedClientName
+   - All data queries use linkedClientId — the trustee sees the client's
+     full portfolio, not their own
+
+4. Credentials are admin-assigned. No self-registration or password creation
+   form. The RM creates the trustee record in the admin panel; the trustee
+   receives login credentials directly (same as primary clients).
+   On first login the trustee sets up 2FA (TOTP or SMS) but does not create
+   a password through a web form.
+
+STATUSES
+--------
+  active       KYC verified; trustee has active login access
+  pending-kyc  Record created; awaiting KYC document review. Login access
+               is not activated until status transitions to active.
+  suspended    Access revoked by RM or compliance. Login is blocked.
+
+KPI STRIP
+---------
+Three summary cards above the trustee list:
+  Total Trustees    Count of all trustee records
+  Active            Count of active (KYC-verified) trustees
+  Pending KYC       Count of trustees awaiting verification (highlighted)
+
+TRUSTEE LIST
+------------
+Each trustee is a collapsible row. Collapsed view shows:
+  - 40px avatar (initials, gold border)
+  - Full name + relation badge (e.g. "Spouse", "Son", "Family Office Representative")
+  - Sub-ID (DM Mono, muted)
+  - Access level badge (View Only / Transact / Full Access)
+  - KYC status badge (Verified / Pending / Expired)
+  - Date added
+  - Status badge (Active / Pending KYC / Suspended)
+  - ChevronDown toggle
+
+Expanded view shows three columns:
+  Identity column    Full name, date of birth, nationality, domicile, phone
+  Account column     Sub-ID, relation, onboardedAt, addedBy (RM name)
+  Access & KYC       Access level badge + description; KYC badge + dates
+
+Notes panel appears below the three columns (gold-bordered for pending-kyc).
+A "Contact RM — Expedite Verification" button appears for pending-kyc rows.
+
+ACCESS LEVELS
+-------------
+Three levels configurable per trustee:
+
+  view-only    Can view portfolio and statements only. Cannot initiate
+               any transfer or withdrawal requests. Read-only across all pages.
+
+  transact     Can initiate transfer/withdrawal requests. All requests go
+               to both the RM and the primary client simultaneously. Either
+               the RM or the client can approve; the first approval advances
+               the request. The trustee is notified of the outcome.
+
+  full         Full account access equivalent to the primary account holder.
+               Can initiate requests (same consent flow as 'transact').
+               This is the highest access level.
+
+TRANSFER / WITHDRAWAL CONSENT FLOW (for transact and full trustees)
+---------------------------------------------------------------------
+When a trustee initiates a transfer or withdrawal request:
+
+  1. Request is created with submittedBy: 'trustee' + trustee's sub-ID
+  2. Simultaneous notification sent to: RM and primary client
+  3. Either the RM or the client can approve or reject — first action wins
+  4. Once approved by either party, the request enters normal processing
+  5. Outcome notification (approved / rejected) sent to: trustee, client,
+     and RM — all three always see the result
+
+There is no mandatory waiting period — if the RM approves first, the request
+proceeds regardless of whether the client has reviewed it, and vice versa.
+
+MESSAGE SENDER ATTRIBUTION
+---------------------------
+All trustees share the same message threads as the primary client. When a
+trustee sends a message, the bubble appears on the right side (same side as
+the client's messages) but carries a sender label:
+
+  "[Trustee Full Name]  [Trustee]"
+
+The "Trustee" label is a small gold badge inline with the sender name. This
+label appears above the bubble on all message interfaces — the client's
+portal, the RM's admin panel, and the trustee's own view — so all parties
+always know who sent each message.
+
+Client messages have no sender label (direction alone identifies them).
+RM/bank messages show the sender name on the left as normal.
+
+Trustee message bubbles use a slightly lighter gold tint background
+(rgba(196,164,74,0.06)) vs the client's full gold tint (rgba(196,164,74,0.10))
+to visually distinguish them within the same right-side column.
+
+COMPLIANCE NOTICE
+-----------------
+A persistent notice at the top of the trustees page:
+
+  "Trustee access levels and KYC status are managed exclusively by ZPF
+   administration. To add, amend, or remove a trustee, contact your RM.
+   Changes require compliance verification and may take up to 5 business days."
+
+ADMIN CONTEXT (RM Admin)
+------------------------
+RM Admins manage trustee records in the admin panel:
+  - Create trustee record (status: pending-kyc, credentials issued)
+  - Upload trustee ID/passport to vault (linked to trustee sub-ID)
+  - Transition status: pending-kyc → active (after KYC verification complete)
+  - Set or change access level (view-only / transact / full)
+  - Suspend trustee (login blocked, reason required, logged to audit trail)
+  - View all requests initiated by the trustee and their consent outcomes
+  - Cannot delete trustee records — records are retained for audit purposes
+
+Major Admin counter-approval is required for access level changes on accounts
+above the Major Admin's asset threshold.
+
+Super Admins can reinstate a suspended trustee, override access levels, and
+view the full activity log for all trustees across any account.

@@ -1,0 +1,4 @@
+Financial engine rules are documented in:
+  docs/portfolio-page-spec.txt → Appendix A1–A7
+
+This file is intentionally empty.

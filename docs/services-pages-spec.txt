@@ -1,0 +1,482 @@
+================================================================================
+  ZPF — SERVICES PAGES SPECIFICATION
+  Document Vault · Transfers · Statements · Secure Messages
+  Last updated: 2026-04-03
+================================================================================
+
+These are the action-oriented pages where clients interact with ZPF —
+uploading documents, requesting transfers, downloading statements, and
+communicating with their Relationship Manager and ZPF departments.
+
+================================================================================
+  PAGE 1: DOCUMENT VAULT
+  File: /app/dashboard/vault/page.tsx
+  Route: /dashboard/vault
+================================================================================
+
+PURPOSE: The client's complete document archive — physical originals and
+digital copies of all legal, financial, and structural documents held in
+ZPF custody. Read-only view with download capability (except sealed docs).
+
+────────────────────────────────────────────────────────────────────────────────
+  SUMMARY CARDS (4 KPI cards)
+────────────────────────────────────────────────────────────────────────────────
+
+  Card 1: Total Documents — count of all documents in vault
+  Card 2: Secured — documents that are verified, current, no action needed (green)
+  Card 3: Sealed — documents with restricted access (gold)
+  Card 4: Review Due — documents past or near their review date (orange, warn styling)
+           → Card 4 gets a red-tinted border when count > 0
+
+DATA: computed from vaultDocuments array: filter by status and count
+
+────────────────────────────────────────────────────────────────────────────────
+  REVIEW ALERT BANNER
+────────────────────────────────────────────────────────────────────────────────
+
+Conditionally shown (only if counts.review > 0):
+  Red/orange banner listing which document(s) need attention and what action
+  the client should take (always: "contact your RM to renew or revoke").
+  The client cannot action this themselves — they need to tell the RM.
+
+────────────────────────────────────────────────────────────────────────────────
+  CATEGORY FILTER (pill tabs)
+────────────────────────────────────────────────────────────────────────────────
+
+5 categories + "All" default:
+  All | Corporate | Property | Succession | Legal | Financial
+
+Selecting a category filters the document list below in real time (client-side,
+no API call needed — all documents are loaded on page mount).
+
+Document categories explained:
+  Corporate   → company incorporations, M&A documents, shareholder agreements
+  Property    → title deeds, certificates of occupancy, mortgage documents
+  Succession  → wills, testamentary envelopes, succession instructions
+  Legal       → trusts, powers of attorney, court orders
+  Financial   → mandate agreements, tax certifications, FATCA/CRS forms
+
+────────────────────────────────────────────────────────────────────────────────
+  DOCUMENT LIST (expandable rows)
+────────────────────────────────────────────────────────────────────────────────
+
+Each document is a collapsible row. Collapsed state shows:
+  • Category icon (colour-coded)
+  • Document name (bold)
+  • Jurisdiction + lodged date + vault reference number (mono)
+  • Related asset tag (gold, if document is linked to a specific asset —
+    e.g., Title Deed linked to "Real Estate — Victoria Island")
+  • Status badge: SECURED / SEALED / REVIEW DUE / PENDING
+  • Storage badge: "Physical + Digital" / "Physical only" / "Digital only"
+  • Expand chevron (down/up)
+
+DOCUMENT STATUSES:
+  secured    → filed, verified, current, no action needed
+  sealed     → content restricted; client can see it exists but cannot download
+               Requires dual-authorisation to access (RM + named executor/trustee)
+               Page count shows "Sealed" instead of a number
+               No Download button shown for sealed documents
+  review     → reviewDate is past (overdue) or within 90 days
+               Client must notify RM to renew/revoke the instrument
+  pending    → uploaded but RM has not yet reviewed, classified, and approved it
+               Shown to client so they know the document is received
+
+Expanded state adds below the row:
+  • Description paragraph (full details of what the document is)
+  • 4-cell detail grid: Category | Jurisdiction | Pages | Review Date
+  • Notes section (RM notes about this document — visible to client)
+  • Action buttons:
+      - "Download" (only if status ≠ sealed) → GET /api/vault/{docId}/download
+        Returns a signed S3 pre-download URL (expires in 15 minutes)
+      - "View Details" (always visible) → navigates to /dashboard/vault/{docId}
+        (a full-page document detail view — not yet built, planned)
+
+DATA SOURCE:
+  mockVaultDocuments (full detail objects) → DB: vaultDocuments WHERE clientId = {id}
+  API: GET /api/vault?clientId={id} returns full list on page load (no pagination for < 100 docs)
+  Download: GET /api/vault/{docId}/download → S3 pre-signed URL (60s expiry, AES-256 encrypted at rest)
+
+────────────────────────────────────────────────────────────────────────────────
+  VAULT SECURITY PANEL
+────────────────────────────────────────────────────────────────────────────────
+
+3-column information panel (stacks to 1 column on tablet):
+  • Physical Storage: vault address, security grade, access control
+  • Digital Archive: encryption standard, backup, air-gapped servers
+  • Access & Compliance: dual-auth for sealed docs, audit log, FINMA regulation
+
+This is informational only — it builds trust by explaining the security model.
+
+────────────────────────────────────────────────────────────────────────────────
+  LODGE DOCUMENT BUTTON
+────────────────────────────────────────────────────────────────────────────────
+
+"Lodge Document" button (top right, gold icon):
+  Opens an upload modal with:
+    - File upload (accepts PDF, JPG, PNG — max 25MB)
+    - Category selector
+    - Document name (free text)
+    - Notes (optional)
+  On submit:
+    1. Client gets presigned S3 PUT URL from GET /api/vault/upload
+    2. Client uploads file directly to S3
+    3. Client calls POST /api/vault/confirm with doc metadata
+    4. Document created with status = PENDING
+    5. RM receives a notification: "Client has lodged a document for review"
+  The RM then reviews it and updates status, category, reference, and notes.
+
+ADMIN CONTEXT:
+  • The RM and Custody staff are the primary document uploaders
+  • Client-uploaded documents always start as PENDING — the RM must approve
+  • The RM can seal/unseal documents, update review dates, add notes
+  • Document deletion: only RM can archive/remove documents
+    → soft-delete (deletedAt set), not hard-delete; Super Admin can recover
+  • Vault reference numbers (VLT-ZPF-{year}-{seq}) are auto-generated on creation
+  • All document access (download, view) is logged in the audit trail
+  • FINMA requires: documents must be retained for 10 years post-account closure
+
+================================================================================
+  PAGE 2: TRANSFER REQUESTS
+  File: /app/dashboard/transfers/page.tsx
+  Route: /dashboard/transfers
+================================================================================
+
+PURPOSE: The client's outbound payment interface. All transfers require RM
+approval before execution — this page is for submitting requests and
+tracking their status. No funds move without admin sign-off.
+
+────────────────────────────────────────────────────────────────────────────────
+  POLICY NOTICE BANNER (always shown)
+────────────────────────────────────────────────────────────────────────────────
+
+Blue info banner:
+  "All outbound transfer requests are reviewed by ZPF compliance and require
+  authorisation from your Relationship Manager. Standard processing is T+1 to T+2
+  for approved transfers. SWIFT transfers to high-risk jurisdictions are subject
+  to enhanced due diligence."
+
+This is a permanent legal/policy notice, not dismissible.
+
+────────────────────────────────────────────────────────────────────────────────
+  NEW REQUEST FORM (2-step: Details → Review)
+────────────────────────────────────────────────────────────────────────────────
+
+Toggled by "New Request" button in header (turns to "Cancel" when open).
+
+STEP 1 — DETAILS FORM:
+
+Transfer Type selector (4 options):
+  SWIFT   → international wire, any currency, any country
+  SEPA    → EUR transfers within SEPA zone (faster, cheaper than SWIFT)
+  Internal → between the client's own accounts (e.g., EUR → CHF FX conversion)
+  FX      → foreign exchange conversion between accounts
+
+Form fields (2-column grid, 1-column on mobile):
+  Debit Account       → dropdown of unlocked accounts (locked accounts excluded)
+                        Shows available balance below selector
+  Beneficiary Name    → free text (full legal name of recipient)
+  IBAN/Account Number → validated format on blur (ibantools library)
+  Beneficiary Bank    → bank name + branch
+  Amount              → number input with currency selector (CHF/EUR/USD/GBP)
+  Requested Value Date → date picker (min: tomorrow, max: +5 business days)
+  Destination Country → free text
+  Payment Purpose     → free text (legal requirement — must state reason)
+  Supporting Docs     → file attachment drag-drop (optional — e.g., invoice)
+
+"Review Transfer Request" button:
+  • Disabled if any required field is empty
+  • Required: toName, toIban, amount, purpose, valueDate
+  • On click → advances to Step 2
+
+STEP 2 — REVIEW & CONFIRM:
+
+Shows all entered details in a read-only summary grid (same 2-column layout).
+Includes a legal acknowledgement notice:
+  "By confirming, you authorise ZPF to process this transfer request subject
+  to compliance review and RM approval."
+Two buttons: "← Back" (returns to Step 1) | "Confirm & Submit" (submits request)
+
+ON CONFIRM:
+  • POST /api/transfers with all form data
+  • Transfer created in DB with status = "pending-approval"
+  • RM receives notification in admin panel
+  • Form closes, new transfer appears in Pending Requests list below
+  • Client sees a toast: "Transfer request submitted — your RM will review shortly"
+
+VALIDATION RULES:
+  • Amount must be > 0
+  • Amount must not exceed the selected account's available balance
+    (or show a warning — soft block vs hard block is a business decision)
+  • Value date must be a business day (no weekends, no Swiss public holidays)
+  • IBAN must pass ibantools checksum validation
+  • Purpose field must be at least 10 characters (to prevent "N/A" or gibberish)
+
+────────────────────────────────────────────────────────────────────────────────
+  PENDING REQUESTS SECTION
+────────────────────────────────────────────────────────────────────────────────
+
+Shown only if there are transfers with status = pending-approval or approved.
+Each transfer is an expandable card with a gold outline border if pending-approval
+(draws attention to items awaiting action).
+
+Collapsed row shows:
+  • Transfer type icon + type badge (SWIFT/SEPA/etc.)
+  • Beneficiary name + type badge
+  • Route: "CHF Current Account → {country} · {date} · {reference}"
+  • Amount + currency
+  • Status badge: "Pending approval" (gold) / "Approved" (blue) / "Processing" (purple)
+
+Expanded row adds:
+  • Full detail grid (all form fields + submitted date)
+  • RM Note (if the RM has added a note — e.g., "Additional documentation requested")
+    Shown in gold box (or red box if status = rejected)
+
+STATUS FLOW:
+  pending-approval → approved → processing → completed
+                  ↘ rejected (can happen at any stage)
+
+  Client can cancel a transfer only while status = pending-approval
+  (before the RM has approved it — after that, the RM must reject/reverse)
+
+────────────────────────────────────────────────────────────────────────────────
+  TRANSFER HISTORY SECTION
+────────────────────────────────────────────────────────────────────────────────
+
+Completed and rejected transfers, same expandable card format.
+Displayed in a single bordered list (not individual cards — more compact).
+
+DATA SOURCE:
+  mockTransferRequests → DB: transferRequests WHERE clientId = {id} ORDER BY submittedAt DESC
+  API: GET /api/transfers returns pending and history in one call
+
+ADMIN CONTEXT (RM perspective):
+  • RM sees the same transfer requests in /admin/clients/{id}/transfers
+  • RM can: Approve | Reject (with reason) | Request more info (adds RM note)
+  • If amount exceeds threshold (configured per client or system-wide):
+    → Major Admin counter-approval required before RM can finalise
+    → Transfer enters "pending-counter-approval" status
+    → Major Admin sees it on their dashboard (gold pulsing border)
+  • After RM approves, Operations department marks it "processing" then "completed"
+    with a settlement reference number (e.g., SWIFT MT103 reference)
+  • If rejected: RM must provide a reason. Client sees reason in RM Note field.
+
+================================================================================
+  PAGE 3: STATEMENTS
+  File: /app/dashboard/statements/page.tsx
+  Route: /dashboard/statements
+================================================================================
+
+PURPOSE: Archive of all official documents generated by ZPF for this account —
+quarterly valuations, annual reports, tax certificates, performance summaries,
+and custody confirmations. Client can filter and download any document.
+
+────────────────────────────────────────────────────────────────────────────────
+  SUMMARY CARDS (4)
+────────────────────────────────────────────────────────────────────────────────
+
+  Card 1: Total Statements — total count since account opening
+  Card 2: New This Period — unread statements (highlighted with blue border)
+           Shows period label: "Q1 2026 + full year 2025"
+  Card 3: Latest Tax Certificate — year + generation date
+  Card 4: Latest Quarterly — period label + generation date
+
+DATA: computed from statements array (count, filter new, latest by type)
+
+────────────────────────────────────────────────────────────────────────────────
+  FILTERS
+────────────────────────────────────────────────────────────────────────────────
+
+Two filter sets (work together — both applied simultaneously):
+
+Type tabs (pill bar):
+  All | Quarterly | Annual | Performance | Tax | Transactions | Custody
+
+Year pills (individual buttons, can select one year or "All years"):
+  All years | 2026 | 2025 | 2024 | 2023 | 2022
+  Years are dynamic — only years from onboardedAt year to today are shown
+
+STATEMENT TYPES:
+  quarterly   → quarterly portfolio valuation (Jan/Apr/Jul/Oct)
+  annual      → full annual review and report (January each year)
+  performance → standalone performance report (generated on demand or annually)
+  tax         → annual tax certificate for Swiss/local tax filings
+  transaction → period transaction history export
+  custody     → custody confirmation letters (for metals, digital, real estate)
+
+────────────────────────────────────────────────────────────────────────────────
+  STATEMENT LIST (grouped by year)
+────────────────────────────────────────────────────────────────────────────────
+
+Grouped into year sections with a year divider header showing year + doc count.
+Within each year group: a bordered list of statement rows.
+
+Each row:
+  • Type icon (coloured by statement type)
+  • Statement title (e.g., "Q1 2026 Portfolio Valuation")
+  • "New" badge (blue) if not yet downloaded
+  • Type badge (coloured) + period label (e.g., "01 Jan 2026 — 31 Mar 2026")
+  • Meta columns (hidden on mobile): Generated date | Pages | File size
+  • Download button (gold icon, square)
+
+Download action:
+  • GET /api/statements/{id}/download
+  • Returns S3 pre-signed URL (60s expiry)
+  • File: ZPF_{clientId}_{statementType}_{period}.pdf
+  • On first download: statement.new = false (marks as read)
+
+"Download All" button (top right):
+  • Zips all statements passing current filters
+  • POST /api/statements/batch-download?filter={...}
+  • Returns a zip file with all matching PDFs
+
+EMPTY STATE:
+  If no statements match the current filters:
+  "No statements match your filters" with a faint FileText icon
+  (Never shows an error — just the empty state)
+
+DATA SOURCE:
+  mockStatements → DB: statements WHERE clientId = {id} ORDER BY generatedAt DESC
+  API: GET /api/statements returns full list (paginated if > 50)
+
+ADMIN CONTEXT:
+  • Quarterly statements are auto-generated by a BullMQ scheduled job on the
+    1st of January, April, July, October each year
+  • Annual statements are generated on 1st January each year
+  • Tax certificates are generated in January after year-end
+  • The RM can manually generate any statement type at any time
+    (e.g., if a client requests an ad-hoc valuation letter for a bank)
+  • Statement generation uses @react-pdf/renderer with ZPF letterhead template
+  • Generated PDFs are stored in S3 (encrypted) and the URL is stored in DB
+  • If the RM retroactively updates transactions, existing statements are NOT
+    automatically regenerated — the RM must manually regenerate them
+  • The RM can upload external documents as statements (e.g., a letter from
+    the board, a compliance certificate) — these show as type "custody" or
+    a new "letter" type
+
+================================================================================
+  PAGE 4: SECURE MESSAGES
+  File: /app/dashboard/messages/page.tsx
+  Route: /dashboard/messages
+================================================================================
+
+PURPOSE: The client's private communication channel with their RM and ZPF
+departments. All messages are portal-internal — no external email. End-to-end
+encrypted. This replaces email for all sensitive financial communications.
+
+────────────────────────────────────────────────────────────────────────────────
+  LAYOUT: 2-PANEL (thread list + conversation view)
+────────────────────────────────────────────────────────────────────────────────
+
+The page is a full-width 2-column layout:
+  Left (300px): Thread list (inbox)
+  Right (flex): Active conversation
+
+On mobile (≤768px):
+  Shows thread list OR conversation — not both simultaneously.
+  Back button (chevron left) in conversation header returns to list.
+
+"End-to-end encrypted" badge is shown in the page header (green, always visible).
+
+────────────────────────────────────────────────────────────────────────────────
+  THREAD LIST (left panel)
+────────────────────────────────────────────────────────────────────────────────
+
+Header: "Inbox" + unread count badge (total across all threads)
+
+Each thread row:
+  • Circular avatar with participant initials (colour by department category)
+  • Participant name (bold if unread)
+  • Subject line (bold if unread)
+  • Last message snippet (truncated, ellipsis)
+  • Last message date (relative or absolute)
+  • Blue circle badge with unread count (only if unread > 0)
+  • Active thread: gold left border + gold-tinted background
+
+THREAD CATEGORIES (and colours):
+  rm          → gold (direct messages from Relationship Manager)
+  compliance  → red/pink (KYC requests, regulatory matters)
+  operations  → blue (transfer confirmations, settlement notices)
+  custody     → green (vault, metals, digital custody matters)
+  advisory    → purple (investment recommendations, market commentary)
+
+The category determines who is on the other end:
+  The RM sends as "rm". Compliance department sends as "compliance". Etc.
+  Different departments can contact the same client independently.
+
+────────────────────────────────────────────────────────────────────────────────
+  CONVERSATION VIEW (right panel)
+────────────────────────────────────────────────────────────────────────────────
+
+Header:
+  • Department avatar + initials
+  • Thread subject (bold)
+  • Participant name + title
+  • Department category badge (coloured)
+
+Message bubbles:
+  • Admin/department messages (left-aligned): dark bubble, avatar visible
+  • Client messages (right-aligned): gold-tinted bubble, no avatar
+  • Each bubble: sender name + date above (for admin), date only (for client)
+  • Bubble shape: admin = "4px 12px 12px 12px" (flat top-left)
+                 client = "12px 4px 12px 12px" (flat top-right)
+
+Attachments (if any on a message):
+  • Shown below the bubble as a clickable file pill
+  • Click → download the attachment (presigned S3 URL)
+  • Displayed: paperclip icon + filename + filesize
+
+Reply box (pinned to bottom of conversation):
+  • Textarea (2 rows, expandable)
+  • Send button: gold when text present, faint when empty
+  • Send button is disabled when textarea is empty
+  • Below textarea: "Messages are encrypted and stored securely..."
+  • Sending: POST /api/messages/{threadId} with message text
+  • After send: message appears in conversation, reply box clears
+
+────────────────────────────────────────────────────────────────────────────────
+  UNREAD NOTICE (below the main layout)
+────────────────────────────────────────────────────────────────────────────────
+
+Blue strip shown below the messaging panel when totalUnread > 0:
+  "You have {N} unread message(s) — please review at your earliest convenience."
+Disappears when all messages are read (totalUnread = 0).
+
+────────────────────────────────────────────────────────────────────────────────
+  REAL-TIME BEHAVIOUR (must be built for production)
+────────────────────────────────────────────────────────────────────────────────
+
+The page should:
+  • Poll for new messages every 30 seconds (or use Server-Sent Events / WebSocket)
+  • Mark messages as read when the thread is opened (PATCH /api/messages/{threadId}/read)
+  • Show a typing indicator when the RM is composing (optional, WebSocket required)
+  • Show a "delivered" / "read" indicator on client messages
+  • Auto-scroll to the latest message when a thread is opened
+  • Support file attachments (PDF, images) up to 10MB per message
+
+DATA SOURCE:
+  mockMessageThreads → DB: messageThreads WHERE clientId = {id}
+    each thread has: messages[], participantName, participantTitle, category, unread count
+  API:
+    GET  /api/messages              → list all threads with last message + unread count
+    GET  /api/messages/{threadId}   → full thread with all messages
+    POST /api/messages              → create new thread (if starting a new conversation)
+    POST /api/messages/{threadId}   → send a reply
+    PATCH /api/messages/{threadId}/read → mark as read (unread = 0)
+
+ADMIN CONTEXT (RM perspective):
+  • The RM sees all client threads in /admin/clients/{id}/messages
+  • The RM can start a new thread with any subject and category
+  • Department staff (Compliance, Operations, Custody, Advisory) can send
+    messages to clients from their own admin accounts — appears with their
+    department badge, separate from the RM's threads
+  • The RM cannot read or delete messages sent by other departments
+    (scoped to their own threads only — unless Major Admin or Super Admin)
+  • Major Admin sees all threads for their clients (monitoring capability)
+  • Super Admin sees all threads system-wide
+  • Attachments sent by the RM are uploaded to S3 and linked in the message
+  • All message content is encrypted at rest (AWS KMS) — not even server logs
+    contain the plaintext of messages
+
+================================================================================
+  END OF SERVICES PAGES SPEC
+================================================================================

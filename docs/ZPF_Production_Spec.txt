@@ -1,0 +1,2535 @@
+================================================================================
+  ZÜRICHBERG PRIVAT FINANZ AG — PRIVATE CLIENT PORTAL
+  FULL PRODUCTION SPECIFICATION
+  Prepared for: Internal Engineering Reference
+  Version: 2.0 | Date: April 2026
+  [Updated with operational model, admin hierarchy, historical P&L logic]
+================================================================================
+
+  NOTE ON FORMAT:
+  Sections marked [SUGGESTION] are recommendations from the engineering team
+  that are not yet confirmed — review and adopt or discard as needed.
+
+================================================================================
+CONTENTS
+================================================================================
+
+  0.  Project Philosophy & Operational Model
+  1.  Tech Stack & Tooling
+  2.  Project Structure
+  3.  Design System
+  4.  Client Acquisition & Onboarding Flow
+  5.  Authentication System (3-Step + Session + TOTP Enrollment)
+  6.  Admin Hierarchy & Permission Model
+  7.  Database Schema (All Models)
+  8.  Historical Pricing & P&L Calculation Engine
+  9.  API Architecture
+  10. Client Portal — All Pages
+      10.1  Login
+      10.2  Portfolio Overview
+      10.3  Performance & Analytics
+      10.4  Monetary Holdings
+      10.5  Securities Portfolio
+      10.6  Precious Metals
+      10.7  Digital Assets
+      10.8  Real Estate Holdings
+      10.9  Document Vault
+      10.10 Transfer / Withdrawal Requests
+      10.11 Statements
+      10.12 Secure Messages
+      10.13 Beneficiaries
+      10.14 Account Preferences (what users CAN change)
+      10.15 Security Settings
+  11. Admin Panel — Full Specification
+      11.1  Super Admin
+      11.2  Major Admin
+      11.3  Admin (Standard)
+      11.4  Client Account Creation Flow
+      11.5  Asset & Transaction Management (Historical)
+      11.6  Withdrawal Approval Workflow
+      11.7  Document & KYC Management
+      11.8  Messaging (Panel + Email)
+      11.9  Audit & Activity Logs
+      11.10 Staff Management
+      11.11 System Configuration
+  12. Secure Messaging System
+  13. Notification System
+  14. Document Vault Architecture
+  15. Security Infrastructure
+  16. Third-Party Integrations
+  17. State Management
+  18. Testing Strategy
+  19. Deployment & Infrastructure
+  20. Compliance & Regulatory
+  21. Performance Targets
+  22. Build Order & Milestones
+
+================================================================================
+  0. PROJECT PHILOSOPHY & OPERATIONAL MODEL
+================================================================================
+
+ZPF is a strictly invitation-only private wealth management portal. There is
+no public registration, no "Sign Up" button, and no self-service onboarding.
+
+THE FUNDAMENTAL RULE:
+  A client exists in this system ONLY because an admin put them there.
+  Every piece of data on a client's account was created or approved by staff.
+  The client's portal is a read + request interface — not a self-service bank.
+
+OPERATIONAL FLOW (from first contact to active portal):
+  1. Prospective client contacts ZPF via the bank's official email address
+  2. Relationship management and due diligence happen offline
+  3. Once accepted, an Admin creates the client's account in the admin panel
+  4. Admin sets up the client's full portfolio, historical transactions, and assets
+  5. Admin generates credentials (ClientID, Passphrase, TOTP enrollment link)
+  6. Credentials delivered to client via secure, agreed channel (never email)
+  7. Client activates their TOTP authenticator using the enrollment link
+  8. Client logs in — their portal is pre-populated with their full portfolio
+
+CLIENT CAPABILITIES (what they can do in the portal):
+  - View their portfolio, all asset classes, performance
+  - View transaction history and statements
+  - Submit transfer/withdrawal requests (admin must approve before execution)
+  - Message their assigned admin
+  - Upload documents to their vault
+  - Change a limited set of personal preferences (see Section 10.14)
+
+WHAT CLIENTS CANNOT DO:
+  - Create their own account
+  - Add or edit their own financial data
+  - Execute transactions without admin approval
+  - Change their legal name, DOB, nationality, or other identity fields
+  - Change their KYC status
+  - Approve their own beneficiaries
+  - Reset their own TOTP without admin involvement
+
+================================================================================
+  1. TECH STACK & TOOLING
+================================================================================
+
+FRONTEND
+────────
+  Framework:        Next.js 16 (App Router, Server Components)
+  Language:         TypeScript 5
+  Styling:          Tailwind CSS 4
+  UI Icons:         lucide-react
+  Fonts:            Cormorant Garamond, DM Sans, DM Mono (via next/font)
+  Forms:            react-hook-form + zod
+  Date handling:    date-fns
+  Charts:           recharts (line charts, bar charts, allocation bars)
+  PDF Viewer:       react-pdf (in-browser statement viewing)
+  Notifications:    Sonner (toast notifications)
+  Animations:       CSS transitions only — no animation libraries
+
+BACKEND
+────────
+  Auth:             lucia-auth (session management) + otplib (TOTP)
+  Password:         argon2 (hashing — NOT bcrypt)
+  Database ORM:     Prisma 6
+  Database:         PostgreSQL 16
+  Email:            Resend (admin alerts and optional admin-side notifications)
+  File Storage:     AWS S3 + AWS KMS (encrypted at rest)
+  Queue:            BullMQ + Redis (async: price updates, PDF gen, email)
+  Rate limiting:    Upstash Redis
+  Logging:          Pino (structured JSON)
+  Validation:       zod (shared client + server)
+
+ADMIN-SPECIFIC
+──────────────
+  Rich text editor: Tiptap (composing messages to clients)
+  Data tables:      TanStack Table v9
+  PDF export:       @react-pdf/renderer (statement generation)
+  IBAN validation:  ibantools
+
+INFRASTRUCTURE
+──────────────
+  Hosting:          Vercel (eu-central1 region — Frankfurt)
+  Database:         Supabase (PostgreSQL) or AWS RDS
+  Redis:            Upstash Redis (serverless)
+  File Storage:     AWS S3 (eu-central-1)
+  Monitoring:       Sentry (errors) + Vercel Analytics
+  Uptime:           Better Uptime / Checkly
+
+DEVELOPMENT TOOLING
+───────────────────
+  Package manager:  npm
+  Linting:          ESLint 9 + eslint-plugin-security
+  Formatting:       Prettier
+  Git hooks:        Husky + lint-staged
+  E2E Testing:      Playwright
+  Unit Testing:     Vitest
+  CI/CD:            GitHub Actions
+  API Testing:      Bruno (no cloud sync)
+
+================================================================================
+  2. PROJECT STRUCTURE
+================================================================================
+
+  zpfinanz/
+  ├── app/
+  │   ├── layout.tsx
+  │   ├── globals.css
+  │   ├── page.tsx                      (→ /login)
+  │   │
+  │   ├── login/
+  │   │   └── page.tsx                  (3-step auth)
+  │   │
+  │   ├── dashboard/                    (CLIENT PORTAL)
+  │   │   ├── layout.tsx
+  │   │   ├── page.tsx                  (→ /dashboard/portfolio)
+  │   │   ├── portfolio/page.tsx
+  │   │   ├── performance/page.tsx
+  │   │   ├── monetary/page.tsx
+  │   │   ├── securities/page.tsx
+  │   │   ├── metals/page.tsx
+  │   │   ├── digital/page.tsx
+  │   │   ├── real-estate/page.tsx
+  │   │   ├── vault/
+  │   │   │   ├── page.tsx
+  │   │   │   └── [docId]/page.tsx
+  │   │   ├── transfers/
+  │   │   │   ├── page.tsx
+  │   │   │   └── new/page.tsx
+  │   │   ├── statements/page.tsx
+  │   │   ├── messages/
+  │   │   │   ├── page.tsx
+  │   │   │   └── [threadId]/page.tsx
+  │   │   ├── beneficiaries/page.tsx
+  │   │   ├── settings/page.tsx
+  │   │   └── security/page.tsx
+  │   │
+  │   ├── admin/                        (ADMIN PANEL — all tiers)
+  │   │   ├── login/page.tsx
+  │   │   ├── layout.tsx
+  │   │   ├── page.tsx                  (→ /admin/overview)
+  │   │   ├── overview/page.tsx
+  │   │   ├── clients/
+  │   │   │   ├── page.tsx
+  │   │   │   ├── new/page.tsx          (create client — admin only)
+  │   │   │   └── [clientId]/
+  │   │   │       ├── page.tsx
+  │   │   │       ├── portfolio/page.tsx
+  │   │   │       ├── transactions/page.tsx  (add/edit historical)
+  │   │   │       ├── documents/page.tsx
+  │   │   │       ├── transfers/page.tsx
+  │   │   │       ├── messages/page.tsx
+  │   │   │       ├── kyc/page.tsx
+  │   │   │       └── activity/page.tsx
+  │   │   ├── transfers/page.tsx        (all pending approvals)
+  │   │   ├── messages/page.tsx
+  │   │   ├── audit/page.tsx
+  │   │   ├── staff/
+  │   │   │   ├── page.tsx
+  │   │   │   └── new/page.tsx
+  │   │   └── config/page.tsx
+  │   │
+  │   └── api/
+  │       ├── auth/
+  │       │   ├── login/route.ts
+  │       │   ├── logout/route.ts
+  │       │   ├── totp/
+  │       │   │   ├── verify/route.ts
+  │       │   │   └── enroll/route.ts
+  │       │   ├── session/route.ts
+  │       │   └── change-passphrase/route.ts
+  │       ├── portfolio/route.ts
+  │       ├── assets/[type]/route.ts
+  │       ├── transfers/
+  │       │   ├── route.ts
+  │       │   └── [id]/route.ts
+  │       ├── vault/
+  │       │   ├── route.ts
+  │       │   ├── [docId]/route.ts
+  │       │   └── upload/route.ts
+  │       ├── messages/
+  │       │   ├── route.ts
+  │       │   └── [threadId]/route.ts
+  │       ├── statements/route.ts
+  │       ├── notifications/route.ts
+  │       └── admin/
+  │           ├── clients/
+  │           │   ├── route.ts
+  │           │   └── [clientId]/
+  │           │       ├── route.ts
+  │           │       ├── assets/route.ts
+  │           │       └── transactions/route.ts
+  │           ├── transfers/
+  │           │   └── [id]/route.ts
+  │           ├── staff/route.ts
+  │           └── audit/route.ts
+  │
+  ├── components/
+  │   ├── sidebar.tsx
+  │   ├── topbar.tsx
+  │   ├── mobile-drawer.tsx
+  │   ├── mobile-bottom-nav.tsx
+  │   ├── zpf-logo.tsx
+  │   ├── ui/                           (reusable primitives)
+  │   │   ├── badge.tsx
+  │   │   ├── button.tsx
+  │   │   ├── card.tsx
+  │   │   ├── dialog.tsx
+  │   │   ├── input.tsx
+  │   │   ├── label.tsx
+  │   │   ├── progress.tsx
+  │   │   ├── skeleton.tsx
+  │   │   ├── table.tsx
+  │   │   ├── tabs.tsx
+  │   │   └── tooltip.tsx
+  │   ├── charts/
+  │   │   ├── allocation-bar.tsx
+  │   │   ├── performance-line.tsx
+  │   │   └── asset-donut.tsx
+  │   ├── portfolio/
+  │   │   ├── hero-card.tsx
+  │   │   ├── asset-class-card.tsx
+  │   │   ├── activity-item.tsx
+  │   │   └── rm-card.tsx
+  │   └── admin/
+  │       ├── admin-sidebar.tsx
+  │       ├── client-table.tsx
+  │       ├── transaction-form.tsx
+  │       └── transfer-approval-card.tsx
+  │
+  ├── lib/
+  │   ├── auth.ts
+  │   ├── db.ts
+  │   ├── s3.ts
+  │   ├── totp.ts
+  │   ├── audit.ts
+  │   ├── rate-limit.ts
+  │   ├── format.ts
+  │   ├── pnl.ts                        (P&L calculation engine)
+  │   ├── permissions.ts                (role-based access helpers)
+  │   └── validations/
+  │       ├── auth.ts
+  │       ├── transfer.ts
+  │       ├── transaction.ts
+  │       └── message.ts
+  │
+  ├── middleware.ts
+  ├── prisma/
+  │   ├── schema.prisma
+  │   └── migrations/
+  └── .env.local
+
+================================================================================
+  3. DESIGN SYSTEM
+================================================================================
+
+All design tokens live in app/globals.css as CSS custom properties.
+Never hardcode hex values in components — always use the variable.
+
+COLOR TOKENS
+────────────
+  --navy        #08162A   Primary background
+  --navy2       #0e2040   Sidebar, cards
+  --navy3       #162d56   Hover states, inputs
+  --gold        #C4A44A   Primary accent
+  --gold2       #dfc27a   Gold hover
+  --gold3       #8a6f2e   Gold dark / pressed
+  --cream       #F4EFE6   Primary light text
+  --mist        #8A9AB0   Secondary text, labels
+  --border      rgba(196,164,74,0.15)
+  --border2     rgba(196,164,74,0.30)
+  --green       #1d9e75   Positive, active, verified
+  --red         #c0392b   Negative, error, rejected
+  --amber       #d97706   Warning, pending, review [SUGGESTION: add this]
+  --surf        rgba(255,255,255,0.04)
+  --surf2       rgba(255,255,255,0.07)
+  --radius      6px
+  --radius-lg   12px
+
+TYPOGRAPHY
+──────────
+  --font-display: Cormorant Garamond — headings, large numbers, wordmark
+  --font-body:    DM Sans            — all UI text, labels, body
+  --font-mono:    DM Mono            — IDs, amounts, technical values
+
+RESPONSIVE BREAKPOINTS
+───────────────────────
+  Mobile:  < 768px
+  Tablet:  768–1024px
+  Desktop: > 1024px
+
+================================================================================
+  4. CLIENT ACQUISITION & ONBOARDING FLOW
+================================================================================
+
+STAGE 1 — INITIAL CONTACT (Offline)
+─────────────────────────────────────
+  - ZPF publishes a contact email on their public-facing website (e.g., contact@zpfinanz.ch)
+    This website is SEPARATE from the portal — it's just an informational page.
+  - Prospective client emails or calls ZPF expressing interest
+  - Relationship Manager and compliance team conduct offline due diligence:
+      - AML screening
+      - PEP (Politically Exposed Person) check
+      - Source of wealth verification
+      - KYC document collection (passport, proof of address, etc.)
+  - Decision made: accept or decline client
+  - All of this happens entirely outside the portal system
+
+STAGE 2 — ACCOUNT CREATION (Admin Panel)
+─────────────────────────────────────────
+  Only an Admin (or higher) can create a client account.
+  Done via /admin/clients/new (see Section 11.4 for full form spec).
+
+  What admin fills in:
+    - Full legal name, display name, date of birth
+    - Nationality, domicile country
+    - Risk profile, mandate type
+    - KYC status (set to VERIFIED after documents checked offline)
+    - Assign to self (or another admin if creating on behalf)
+
+  System generates automatically:
+    - ClientID: ZPF-XXXX-XXXX (random, unique, checked for collision)
+    - Passphrase: 24-char random alphanumeric (admin can optionally override)
+    - TOTP enrollment token: signed URL, 72-hour expiry
+
+STAGE 3 — CREDENTIAL DELIVERY (Offline / Secure Channel)
+──────────────────────────────────────────────────────────
+  Admin downloads or copies three pieces of information:
+    1. ClientID (e.g., ZPF-7741-0038) — not secret, but private
+    2. Initial Passphrase (shown ONCE in admin panel — admin must note it down)
+    3. TOTP Enrollment URL (e.g., auth.zpfinanz.ch/enroll?token=xxxxxxxx)
+
+  These three items are communicated to the client via an agreed secure channel:
+    - In-person meeting (preferred)
+    - Encrypted document via agreed courier or lawyer
+    - NEVER via email in plaintext
+    - NEVER via SMS
+
+  [SUGGESTION]: Consider a "Credential Sheet" PDF generated by admin —
+  a formatted one-page PDF containing all three items, watermarked with the
+  client's name. Admin prints it and hands over physically. The PDF is
+  generated in-memory and never stored.
+
+STAGE 4 — TOTP ENROLLMENT (Client Self-Completes)
+───────────────────────────────────────────────────
+  The enrollment URL (auth.zpfinanz.ch/enroll?token=xxx) is a dedicated page:
+
+  Step 1: Client visits the URL
+  Step 2: Page validates the token (must not be expired, must not be used)
+  Step 3: Client enters their ClientID (proves they are the right person)
+  Step 4: System generates a TOTP secret and displays a QR code
+  Step 5: Client scans with any standard authenticator app
+           (Google Authenticator, Authy, 1Password, etc.)
+  Step 6: Client enters the 6-digit code to confirm enrollment
+  Step 7: System stores the TOTP secret (AES-256 encrypted) in the database
+  Step 8: Enrollment token is marked as used (one-time use)
+  Step 9: System shows 8 backup codes — client writes them down
+  Step 10: Redirect: "Your authenticator is set up. You may now log in."
+
+  Important rules:
+    - Enrollment token is single-use
+    - Enrollment token expires after 72 hours
+    - If expired: admin must regenerate (from admin panel)
+    - Client cannot re-enroll without admin generating a new token
+    - After enrollment, the QR code is gone — it cannot be shown again
+
+STAGE 5 — PORTFOLIO SETUP (Admin)
+───────────────────────────────────
+  After account creation, admin populates the client's portfolio:
+    - Creates asset class entries (monetary, securities, metals, etc.)
+    - Enters historical transactions (full history as known)
+    - System calculates current values from historical data + current prices
+    - Admin reviews totals, confirms they match the client's real-world holdings
+  (See Section 8 for the full P&L and historical pricing engine)
+
+STAGE 6 — FIRST LOGIN
+───────────────────────
+  Client logs in using the 3-step auth flow.
+  Their portal is fully pre-populated — not a blank screen.
+  Welcome message from RM auto-created in their messages inbox.
+
+  [SUGGESTION]: On first login, show a "Welcome" overlay modal that:
+    - Introduces the portal briefly (3 bullet points)
+    - Prompts them to change their passphrase (admin set the initial one)
+    - Links to their RM card
+    - Has a "Got it, take me to my portfolio" dismiss button
+
+================================================================================
+  5. AUTHENTICATION SYSTEM
+================================================================================
+
+OVERVIEW
+────────
+  3-factor sequence:
+    Factor 1:  ClientID      (identifier — not a secret)
+    Factor 2:  Passphrase    (secret — argon2 hash, min 20 chars)
+    Factor 3:  TOTP code     (RFC 6238, 30-second, 6-digit)
+
+  No "remember me". No social login. No magic links. No email OTP.
+
+LOGIN FLOW (Step by Step)
+──────────────────────────
+
+  STEP 1 — Client Identifier
+    UI: Input field formatted ZPF-XXXX-XXXX
+    Client-side: regex format validation only
+    Server: does NOT confirm if clientId exists (prevents enumeration)
+    On submit: advance to step 2, store clientId in component state
+
+  STEP 2 — Passphrase
+    UI: password field, show/hide toggle
+    POST /api/auth/login { clientId, passphrase }
+    Server:
+      1. Look up user by clientId
+      2. If not found: generate fake argon2 timing delay (prevent timing attacks)
+         Return generic error: "Invalid credentials"
+      3. If found: verify passphrase against argon2 hash
+      4. If wrong: return same generic error "Invalid credentials"
+      5. If correct: generate stepToken (JWT, 5 min, signed with APP_SECRET)
+         stepToken payload: { userId, step: 'totp', iat, exp }
+      6. Return { stepToken }
+    Rate limit: 5 attempts per clientId per 10 minutes
+
+  STEP 3 — TOTP Code
+    UI: 6 individual digit fields, auto-advance, backspace navigates back
+    POST /api/auth/totp/verify { stepToken, code }
+    Server:
+      1. Validate and decode stepToken (must not be expired)
+      2. Retrieve TOTP secret for userId (decrypt from DB)
+      3. Verify 6-digit code using otplib (±1 window drift tolerance)
+      4. If valid:
+          a. Invalidate stepToken (store used tokens in Redis, TTL 5 min)
+          b. Create Lucia session in DB
+          c. Set session cookie: HttpOnly, Secure, SameSite=Strict
+          d. Reset failedTotpAttempts counter to 0
+          e. Log login to AuditLog
+          f. Update lastLoginAt, lastLoginIp, lastLoginCity on User
+          g. Return { success: true }
+      5. If invalid:
+          a. Increment failedTotpAttempts
+          b. If attempts >= 10: lock account (isLocked = true)
+             Notify assigned admin via Notification + optional email
+          c. Return { error: "Invalid code" }
+    Rate limit: 10 attempts per stepToken per 10 minutes
+
+  ON SUCCESS: client.replace('/dashboard/portfolio')
+  Admin login: same flow but checks role is not CLIENT, redirects to /admin/overview
+
+SESSION MANAGEMENT
+───────────────────
+  Library: lucia-auth
+  Session stored in PostgreSQL (Session table)
+  Cookie name: __zpf_sid (HttpOnly, Secure, SameSite=Strict)
+  Idle timeout: 8 hours (reset on each request)
+  Absolute timeout: 24 hours
+  Multiple sessions allowed (phone + desktop)
+  After passphrase change: all sessions revoked immediately
+
+MIDDLEWARE (middleware.ts)
+───────────────────────────
+  /dashboard/**  → require valid session, role = CLIENT
+  /admin/**      → require valid session, role in [ADMIN, MAJOR_ADMIN, SUPER_ADMIN]
+  /admin/login   → skip auth check
+  /login         → skip auth check
+  /              → skip auth check
+
+  On /admin/** routes: attach user's role and adminId to request headers
+  so server components can enforce fine-grained permissions.
+
+TOTP RESET (by admin)
+──────────────────────
+  Client cannot self-reset TOTP.
+  Admin generates a new enrollment token → sends new enrollment URL to client.
+  Old TOTP secret is NOT deleted until new enrollment is complete.
+  On successful new enrollment: old secret replaced, all sessions revoked.
+
+================================================================================
+  6. ADMIN HIERARCHY & PERMISSION MODEL
+================================================================================
+
+ROLES (in order of authority)
+──────────────────────────────
+
+  SUPER_ADMIN
+  ───────────
+  The single top-level account. Only one should exist in production.
+  Created manually via a seed script during initial deployment.
+  No one can create or delete a Super Admin through the UI.
+
+  Capabilities:
+    - Full access to everything
+    - Create / deactivate Major Admins
+    - Create / deactivate Admins (assign to a Major Admin)
+    - View all clients, all transactions, all messages, all audit logs
+    - View all admins' activities and performance
+    - Change system configuration
+    - Generate system-wide reports
+    - Cannot be locked out by any other user
+
+  MAJOR_ADMIN
+  ────────────
+  Second in command. Typically a senior manager or COO-level role.
+  Created by Super Admin only.
+
+  Capabilities:
+    - Create Admins (who are assigned to this Major Admin as owner)
+    - View all clients under their assigned Admins
+    - View all transactions, transfers, messages across their Admins' clients
+    - See full activity log of every Admin under them
+    - Override or re-assign a client from one Admin to another (within their scope)
+    - Approve large transfers that exceed Admin approval threshold
+      [SUGGESTION]: Set threshold — e.g., transfers > CHF 500,000 require
+      Major Admin counter-approval regardless of which admin initiated it
+    - Deactivate Admins under them
+    - Cannot create Major Admins
+    - Cannot access clients outside their scope (unless Super Admin)
+
+  ADMIN
+  ──────
+  The operational level. Creates and manages client accounts.
+  Created by Super Admin or Major Admin.
+  Always assigned to a Major Admin as "parent".
+
+  Capabilities:
+    - Create client accounts
+    - View and edit clients they own (createdByAdminId = this admin)
+    - Set up client portfolios and historical transactions
+    - Approve / reject withdrawal requests from their clients
+    - Receive and reply to messages from their clients (in-panel)
+    - View only their own clients — NOT other admins' clients
+    - Upload / manage documents in client vaults
+    - Generate statements for their clients
+    - Cannot create other admins
+    - Cannot see the activity of other admins
+
+OWNERSHIP CHAIN
+────────────────
+  SuperAdmin
+      └── MajorAdmin A
+              ├── Admin 1
+              │       ├── Client X (createdByAdminId = Admin 1)
+              │       └── Client Y
+              └── Admin 2
+                      └── Client Z
+
+  Rules:
+    - Admin 1 can ONLY see Client X and Client Y
+    - Major Admin A can see X, Y, and Z (all clients under their admins)
+    - Super Admin sees everyone
+    - A client CANNOT be shared between admins — one owner at a time
+    - [SUGGESTION]: Super Admin can reassign a client to a different admin
+      (e.g., if an admin leaves). This creates an AuditLog entry.
+
+DATABASE REPRESENTATION
+────────────────────────
+  On the User model (for admin accounts):
+    role              Role    — ADMIN | MAJOR_ADMIN | SUPER_ADMIN | CLIENT
+    parentAdminId     String? — for ADMIN: points to their MajorAdmin's userId
+                              — for MAJOR_ADMIN: null (owned by SuperAdmin)
+    createdByUserId   String? — who created this account
+
+  On ClientProfile:
+    ownerAdminId      String  — the Admin who created and owns this client
+    assignedRmId      String? — optional: RM display name shown in portal
+                                (can be a different admin or a display-only field)
+
+WHAT EACH ROLE SEES IN ADMIN PANEL
+─────────────────────────────────────
+  Super Admin sees:  Everything. No filters applied.
+  Major Admin sees:  All clients and admins under their tree only.
+  Admin sees:        Only their own clients. No other admin's data.
+  All roles see:     Their own messages, their own notifications.
+
+PERMISSION ENFORCEMENT
+───────────────────────
+  lib/permissions.ts exports helper functions:
+
+    canAccessClient(actingUser, clientId): boolean
+      — checks ownership chain before returning any client data
+
+    canApproveTransfer(actingUser, transfer): boolean
+      — Admin can approve transfers for their clients up to threshold
+      — Major Admin can approve above threshold for their scope
+      — Super Admin can approve anything
+
+    canManageStaff(actingUser, targetUser): boolean
+      — Super Admin can manage anyone
+      — Major Admin can manage admins under them only
+
+  All API routes call these helpers before executing any query.
+  Return 403 if check fails — do NOT leak that the resource exists.
+
+================================================================================
+  7. DATABASE SCHEMA (PRISMA)
+================================================================================
+
+All monetary values: Prisma Decimal type (never JS float for money).
+
+────────────────────────────────────────────────────────────────────────────────
+USER & AUTH
+────────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id                    String    @id @default(cuid())
+  clientId              String    @unique   -- ZPF-XXXX-XXXX (all roles)
+  passphraseHash        String
+  totpSecretEnc         String?             -- AES-256-GCM encrypted
+  totpEnabled           Boolean   @default(false)
+  totpBackupCodes       String[]            -- argon2-hashed backup codes
+
+  role                  Role      @default(CLIENT)
+  parentAdminId         String?             -- ADMIN's Major Admin userId
+  createdByUserId       String?             -- who created this account
+  isLocked              Boolean   @default(false)
+  lockedReason          String?
+  failedTotpAttempts    Int       @default(0)
+  mustChangePassphrase  Boolean   @default(true)  -- true on first login
+
+  lastLoginAt           DateTime?
+  lastLoginIp           String?
+  lastLoginCity         String?
+  lastLoginCountry      String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  -- Profile relations
+  clientProfile         ClientProfile?
+  staffProfile          StaffProfile?
+
+  -- System relations
+  sessions              Session[]
+  auditLogs             AuditLog[]
+  messageSender         Message[]    @relation("SenderMessages")
+  notifications         Notification[]
+
+  -- Admin hierarchy
+  parentAdmin           User?    @relation("AdminHierarchy", fields: [parentAdminId], references: [id])
+  childAdmins           User[]   @relation("AdminHierarchy")
+  createdBy             User?    @relation("CreatedBy", fields: [createdByUserId], references: [id])
+  createdUsers          User[]   @relation("CreatedBy")
+}
+
+enum Role {
+  CLIENT
+  ADMIN
+  MAJOR_ADMIN
+  SUPER_ADMIN
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  userId      String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  ipAddress   String?
+  userAgent   String?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TotpEnrollmentToken {
+  id          String   @id @default(cuid())
+  userId      String
+  token       String   @unique   -- random hex, 64 chars
+  expiresAt   DateTime           -- 72 hours from creation
+  usedAt      DateTime?          -- null = not yet used
+  createdByAdminId String
+  createdAt   DateTime @default(now())
+}
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT PROFILE
+────────────────────────────────────────────────────────────────────────────────
+
+model ClientProfile {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+
+  -- Identity (admin-managed only)
+  fullName              String
+  displayName           String              -- shown in portal: "Adebayo S."
+  initials              String              -- "AS"
+  nationality           String?
+  domicile              String?
+  dateOfBirth           DateTime?
+  phoneNumber           String?             -- optional, admin-set or client-request
+
+  -- Account meta (admin-managed)
+  onboardedAt           DateTime
+  kycStatus             KYCStatus @default(PENDING)
+  kycVerifiedAt         DateTime?
+  kycExpiresAt          DateTime?           -- for KYC renewal reminders
+  riskProfile           RiskProfile @default(BALANCED)
+  mandateType           MandateType @default(ADVISORY)
+  mandateRevisedAt      DateTime?
+
+  -- Ownership
+  ownerAdminId          String              -- Admin who created and manages this client
+  ownerAdmin            User      @relation(fields: [ownerAdminId], references: [id])
+
+  -- Display RM (what client sees in their portal)
+  rmDisplayName         String?             -- "Dr. Markus von Steiner"
+  rmDisplayTitle        String?             -- "Managing Director & Senior RM"
+  rmDisplayInitials     String?             -- "MvS"
+  rmDisplayPhone        String?
+  rmDisplayAvailability String?
+  rmNextCall            DateTime?
+
+  -- Custodian display
+  custodianName         String    @default("ZPF AG — Primary Custody")
+  custodianAddress      String    @default("Bahnhofstrasse 72, 8001 Zürich")
+
+  -- Client-editable preferences (see Section 10.14)
+  preferredCurrency     String    @default("CHF")
+  preferredTimezone     String    @default("Europe/Zurich")
+  preferredLanguage     String    @default("en")
+  notifyOnMessage       Boolean   @default(true)
+  notifyOnTransfer      Boolean   @default(true)
+  notifyOnStatement     Boolean   @default(true)
+
+  -- First login flag
+  hasCompletedWelcome   Boolean   @default(false)
+
+  -- Relations
+  portfolio             Portfolio?
+  beneficiaries         Beneficiary[]
+  transferRequests      TransferRequest[]
+  documents             VaultDocument[]
+  statements            Statement[]
+  messageThreads        MessageThread[]
+  assetClasses          AssetClass[]
+  activities            Activity[]
+}
+
+enum KYCStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  UNDER_REVIEW
+}
+
+enum RiskProfile {
+  CONSERVATIVE
+  BALANCED
+  GROWTH
+  AGGRESSIVE
+}
+
+enum MandateType {
+  ADVISORY
+  DISCRETIONARY
+  EXECUTION_ONLY
+}
+
+────────────────────────────────────────────────────────────────────────────────
+STAFF PROFILE (for admin portal display + email notifications)
+────────────────────────────────────────────────────────────────────────────────
+
+model StaffProfile {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+
+  fullName              String
+  displayName           String
+  initials              String
+  title                 String
+  department            String?
+
+  -- Notification email (optional — admin can add later, not required on creation)
+  notificationEmail     String?
+  emailVerified         Boolean   @default(false)
+  emailVerifiedAt       DateTime?
+
+  -- What email notifications this admin receives
+  emailOnNewMessage     Boolean   @default(false)  -- if notificationEmail is set
+  emailOnTransferRequest Boolean  @default(false)
+  emailOnClientLogin    Boolean   @default(false)  -- [SUGGESTION]: alert on unusual logins
+
+  availabilityStatus    AvailabilityStatus @default(AVAILABLE)
+  availabilityNote      String?
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  IN_MEETING
+  AWAY
+  OUT_OF_OFFICE
+}
+
+────────────────────────────────────────────────────────────────────────────────
+PORTFOLIO & ASSETS
+────────────────────────────────────────────────────────────────────────────────
+
+model Portfolio {
+  id                    String    @id @default(cuid())
+  clientProfileId       String    @unique
+  clientProfile         ClientProfile @relation(fields: [clientProfileId], references: [id])
+
+  -- These values are COMPUTED and cached — never manually set
+  -- Recalculated whenever a transaction is added/edited or prices update
+  totalValueChf         Decimal   @db.Decimal(18,2)
+  totalCostBasis        Decimal   @db.Decimal(18,2)
+  unrealisedGainPct     Decimal   @db.Decimal(6,4)
+  unrealisedGainChf     Decimal   @db.Decimal(18,2)
+  quarterlyChangePct    Decimal   @db.Decimal(6,4)
+  quarterlyChangeChf    Decimal   @db.Decimal(18,2)
+
+  nextReviewDate        DateTime?
+  nextReviewLabel       String?
+
+  lastCalculatedAt      DateTime? -- when was the last P&L recalc run
+  assetClasses          AssetClass[]
+  updatedAt             DateTime  @updatedAt
+}
+
+model AssetClass {
+  id                    String    @id @default(cuid())
+  portfolioId           String
+  portfolio             Portfolio @relation(fields: [portfolioId], references: [id])
+  clientProfileId       String
+  clientProfile         ClientProfile @relation(fields: [clientProfileId], references: [id])
+
+  type                  AssetClassType
+  label                 String
+  colorHex              String
+  subline               String?
+  statusLabel           String?
+
+  -- Computed values (cached after P&L recalc)
+  valueChf              Decimal   @db.Decimal(18,2) @default(0)
+  allocationPct         Decimal   @db.Decimal(5,2)  @default(0)
+  trendPct              Decimal   @db.Decimal(6,4)  @default(0)
+  trendLabel            String?
+
+  -- Holdings
+  monetaryHoldings      MonetaryHolding[]
+  securities            Security[]
+  metalHoldings         MetalHolding[]
+  digitalHoldings       DigitalHolding[]
+  realEstateHoldings    RealEstateHolding[]
+  transactions          AssetTransaction[]
+
+  updatedAt             DateTime  @updatedAt
+}
+
+enum AssetClassType {
+  MONETARY
+  SECURITIES
+  PRECIOUS_METALS
+  DIGITAL_ASSETS
+  REAL_ESTATE
+  DOCUMENT_VAULT
+}
+
+-- See Section 8 for how historical transactions drive these values.
+
+model MonetaryHolding {
+  id                    String      @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass  @relation(fields: [assetClassId], references: [id])
+  currency              String
+  accountNumber         String?
+  ibanMasked            String?
+  accountType           String?     -- "Current Account", "Fixed Term Deposit"
+  maturityDate          DateTime?
+  interestRate          Decimal?    @db.Decimal(5,4)
+  -- Computed from transactions:
+  balanceNative         Decimal     @db.Decimal(18,2) @default(0)
+  balanceChf            Decimal     @db.Decimal(18,2) @default(0)
+  fxRate                Decimal?    @db.Decimal(10,6)
+  fxRateUpdatedAt       DateTime?
+  updatedAt             DateTime    @updatedAt
+}
+
+model Security {
+  id                    String      @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass  @relation(fields: [assetClassId], references: [id])
+  isin                  String?
+  ticker                String?
+  name                  String
+  securityType          SecurityType
+  currency              String
+  exchange              String?
+  maturityDate          DateTime?
+  couponRate            Decimal?    @db.Decimal(5,4)
+  -- Computed:
+  quantity              Decimal     @db.Decimal(18,6) @default(0)
+  priceNative           Decimal     @db.Decimal(18,4) @default(0)
+  priceChf              Decimal     @db.Decimal(18,4) @default(0)
+  valueChf              Decimal     @db.Decimal(18,2) @default(0)
+  costBasisChf          Decimal     @db.Decimal(18,2) @default(0)
+  unrealisedGainPct     Decimal     @db.Decimal(6,4)  @default(0)
+  updatedAt             DateTime    @updatedAt
+}
+
+enum SecurityType {
+  EQUITY
+  BOND
+  ETF
+  FUND
+  STRUCTURED_PRODUCT
+}
+
+model MetalHolding {
+  id                    String      @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass  @relation(fields: [assetClassId], references: [id])
+  metal                 MetalType
+  ticker                String      -- XAU, XAG, XPT
+  barDescription        String?
+  vaultLocation         String
+  vaultId               String?
+  -- Computed:
+  weightTroyOz          Decimal     @db.Decimal(10,4) @default(0)
+  spotPriceChf          Decimal     @db.Decimal(10,4) @default(0)
+  totalValueChf         Decimal     @db.Decimal(18,2) @default(0)
+  spotUpdatedAt         DateTime?
+  updatedAt             DateTime    @updatedAt
+}
+
+enum MetalType {
+  GOLD
+  SILVER
+  PLATINUM
+  PALLADIUM
+}
+
+model DigitalHolding {
+  id                    String      @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass  @relation(fields: [assetClassId], references: [id])
+  ticker                String
+  name                  String
+  custodyType           String
+  custodyProvider       String?
+  walletRef             String?
+  -- Computed:
+  quantity              Decimal     @db.Decimal(18,8) @default(0)
+  priceChf              Decimal     @db.Decimal(18,2) @default(0)
+  valueChf              Decimal     @db.Decimal(18,2) @default(0)
+  priceUpdatedAt        DateTime?
+  updatedAt             DateTime    @updatedAt
+}
+
+model RealEstateHolding {
+  id                    String      @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass  @relation(fields: [assetClassId], references: [id])
+  propertyName          String
+  address               String
+  country               String
+  titleDocRef           String?
+  acquisitionDate       DateTime?
+  propertyType          String?
+  -- Admin-set valuation (manual for real estate):
+  acquisitionCostChf    Decimal?    @db.Decimal(18,2)
+  lastValuationChf      Decimal?    @db.Decimal(18,2)
+  lastValuedAt          DateTime?
+  valuationStatus       String?
+  updatedAt             DateTime    @updatedAt
+}
+
+────────────────────────────────────────────────────────────────────────────────
+ASSET TRANSACTIONS (the source of truth for all balances and P&L)
+────────────────────────────────────────────────────────────────────────────────
+
+model AssetTransaction {
+  id                    String    @id @default(cuid())
+  assetClassId          String
+  assetClass            AssetClass @relation(fields: [assetClassId], references: [id])
+
+  -- Which specific holding does this affect?
+  -- (only one of these will be non-null per transaction)
+  monetaryHoldingId     String?
+  securityId            String?
+  metalHoldingId        String?
+  digitalHoldingId      String?
+  realEstateHoldingId   String?
+
+  type                  AssetTxType
+  direction             TxDirection -- CREDIT or DEBIT
+
+  -- The core values admin enters
+  transactionDate       DateTime    -- the HISTORICAL date of the transaction
+  quantity              Decimal?    @db.Decimal(18,8)  -- units (oz, BTC, shares)
+  priceAtDate           Decimal?    @db.Decimal(18,6)  -- price per unit at that date
+  amountNative          Decimal?    @db.Decimal(18,2)  -- amount in asset's currency
+  currency              String?
+  amountChf             Decimal?    @db.Decimal(18,2)  -- CHF equivalent at transaction date
+  fxRateAtDate          Decimal?    @db.Decimal(10,6)  -- FX rate used
+
+  description           String?     -- admin label: "Gold purchase — 5oz, LBMA delivery"
+  reference             String?     -- bank ref, SWIFT ref, etc.
+
+  -- Who entered this transaction
+  createdByAdminId      String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  -- For display in client activity feed
+  showInClientActivity  Boolean  @default(true)
+  clientActivityLabel   String?  -- overrides description for client-facing display
+}
+
+enum AssetTxType {
+  -- Monetary
+  WIRE_IN
+  WIRE_OUT
+  INTEREST_CREDIT
+  FEE_DEBIT
+  FX_CONVERSION
+
+  -- Securities
+  SECURITY_BUY
+  SECURITY_SELL
+  DIVIDEND
+  COUPON_PAYMENT
+
+  -- Metals
+  METAL_PURCHASE
+  METAL_SALE
+  METAL_TRANSFER_IN
+  METAL_TRANSFER_OUT
+
+  -- Digital
+  CRYPTO_BUY
+  CRYPTO_SELL
+  CRYPTO_TRANSFER_IN
+  CRYPTO_TRANSFER_OUT
+
+  -- Real Estate
+  PROPERTY_ACQUISITION
+  PROPERTY_SALE
+  RENTAL_INCOME
+
+  -- Generic
+  MANUAL_ADJUSTMENT
+}
+
+enum TxDirection {
+  CREDIT
+  DEBIT
+}
+
+────────────────────────────────────────────────────────────────────────────────
+PRICE HISTORY (for historical P&L calculation)
+────────────────────────────────────────────────────────────────────────────────
+
+model PriceHistory {
+  id              String    @id @default(cuid())
+  assetType       String    -- "metal", "crypto", "fx", "security"
+  ticker          String    -- "XAU", "BTC", "EURUSD", "AAPL"
+  currency        String    @default("CHF")
+  date            DateTime  -- daily closing price date
+  price           Decimal   @db.Decimal(18,6)
+  source          String?   -- "metals-api", "coingecko", "manual"
+  createdAt       DateTime  @default(now())
+
+  @@unique([assetType, ticker, currency, date])
+  @@index([ticker, date])
+}
+
+model PriceCache {
+  id              String    @id @default(cuid())
+  assetType       String
+  ticker          String
+  currency        String    @default("CHF")
+  currentPrice    Decimal   @db.Decimal(18,6)
+  change24hPct    Decimal?  @db.Decimal(6,4)
+  updatedAt       DateTime  @updatedAt
+  source          String?
+
+  @@unique([assetType, ticker, currency])
+}
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSFERS / WITHDRAWALS
+────────────────────────────────────────────────────────────────────────────────
+
+model TransferRequest {
+  id                    String    @id @default(cuid())
+  clientProfileId       String
+  clientProfile         ClientProfile @relation(fields: [clientProfileId], references: [id])
+
+  requestedAt           DateTime  @default(now())
+  status                TransferStatus @default(PENDING_REVIEW)
+
+  -- Source
+  sourceAccountId       String?   -- MonetaryHolding id
+  sourceCurrency        String
+  amountNative          Decimal   @db.Decimal(18,2)
+  amountChf             Decimal   @db.Decimal(18,2)
+
+  -- Beneficiary snapshot at time of request
+  beneficiaryName       String
+  beneficiaryIban       String    -- encrypted
+  beneficiaryBic        String?
+  beneficiaryBank       String?
+  beneficiaryCountry    String
+  reference             String?
+  category              TransferCategory
+  clientNotes           String?
+
+  -- Assigned to the client's owning admin automatically
+  assignedAdminId       String
+  assignedAdmin         User      @relation(fields: [assignedAdminId], references: [id])
+
+  -- Review
+  reviewedByAdminId     String?
+  reviewedAt            DateTime?
+  reviewNotes           String?
+  rejectionReason       String?
+
+  -- Counter-approval (for large transfers)
+  requiresCounterApproval Boolean @default(false)
+  counterApprovedById   String?
+  counterApprovedAt     DateTime?
+
+  -- Execution
+  executedAt            DateTime?
+  settlementRef         String?
+
+  attachments           TransferAttachment[]
+}
+
+enum TransferStatus {
+  PENDING_REVIEW        -- just submitted by client
+  UNDER_REVIEW          -- admin opened it
+  AWAITING_COUNTER      -- needs Major Admin approval
+  APPROVED              -- approved, awaiting execution
+  REJECTED
+  EXECUTED              -- funds moved
+  CANCELLED             -- cancelled by client before approval
+}
+
+enum TransferCategory {
+  PERSONAL
+  INVESTMENT
+  OPERATING_EXPENSE
+  CHARITABLE
+  INTERBANK
+  OTHER
+}
+
+model TransferAttachment {
+  id          String   @id @default(cuid())
+  transferId  String
+  transfer    TransferRequest @relation(fields: [transferId], references: [id])
+  s3Key       String
+  fileName    String
+  mimeType    String
+  uploadedAt  DateTime @default(now())
+}
+
+model Beneficiary {
+  id                    String    @id @default(cuid())
+  clientProfileId       String
+  clientProfile         ClientProfile @relation(fields: [clientProfileId], references: [id])
+
+  nickname              String
+  fullName              String
+  relationship          String?
+  iban                  String    -- AES-256-GCM encrypted
+  bic                   String?
+  bankName              String?
+  bankAddress           String?
+  country               String
+  currency              String
+
+  -- Client can propose a beneficiary, but admin must verify before it can be used
+  proposedByClient      Boolean   @default(false)
+  isVerified            Boolean   @default(false)
+  verifiedAt            DateTime?
+  verifiedByAdminId     String?
+  isActive              Boolean   @default(true)
+  addedAt               DateTime  @default(now())
+  lastUsedAt            DateTime?
+}
+
+────────────────────────────────────────────────────────────────────────────────
+DOCUMENTS, MESSAGES, STATEMENTS, ACTIVITY, AUDIT, NOTIFICATIONS
+────────────────────────────────────────────────────────────────────────────────
+(These models are unchanged from v1.0 except where noted below)
+
+model VaultDocument {
+  -- (same as v1 spec, plus:)
+  uploadedByClientId    String?   -- if client uploaded it
+  uploadedByAdminId     String?   -- if admin lodged it on client's behalf
+  -- ...rest same as v1
+}
+
+model MessageThread {
+  -- (same as v1 spec, assignedRmId renamed to assignedAdminId)
+  assignedAdminId       String?   -- the admin assigned to respond
+  -- ...rest same as v1
+}
+
+model Message {
+  -- (same as v1 spec)
+  -- isInternal = true: visible to all staff, never shown to client
+  -- isInternal = false: shown to client in their messages
+}
+
+-- AuditLog, Activity, Statement, Notification: same as v1 spec
+
+================================================================================
+  8. HISTORICAL PRICING & P&L CALCULATION ENGINE
+================================================================================
+
+This is one of the most important and complex parts of the system.
+When an admin adds a historical transaction (e.g., "gold purchase on 2015-03-14"),
+the system needs to:
+  1. Record the transaction with the price and FX rate at that historical date
+  2. Calculate the cost basis (what was paid)
+  3. Calculate the current value (using today's price)
+  4. Compute P&L = current value - cost basis
+
+PRICE AT HISTORICAL DATE
+─────────────────────────
+  When admin creates a historical transaction, they MUST supply:
+    - transactionDate: the actual date it occurred
+    - priceAtDate: the price per unit on that date (in the asset's currency)
+    - fxRateAtDate: the FX rate to CHF on that date (if non-CHF asset)
+    - amountChf: automatically calculated from above (or manually overridable)
+
+  [SUGGESTION]: In the admin transaction form, provide a "Lookup historical price"
+  button per asset type:
+    - Metals: query PriceHistory table (pre-populated from metals API)
+    - Crypto: query PriceHistory table (pre-populated from CoinGecko history)
+    - FX: query PriceHistory table (pre-populated from Frankfurter API history)
+    - Securities: must be entered manually (no free historical price API for stocks)
+    - Real estate: always manual
+  The button auto-fills priceAtDate and fxRateAtDate — admin can override.
+
+PRICE HISTORY PRE-POPULATION
+──────────────────────────────
+  On first deployment and weekly thereafter (BullMQ job):
+    - Metals (XAU, XAG, XPT): fetch 10-year daily history from metals-api.com
+    - Crypto (BTC, ETH): fetch full daily history from CoinGecko free API
+    - FX (EUR, USD, GBP vs CHF): fetch full daily history from Frankfurter API
+  Store in PriceHistory table.
+
+  This means admins entering historical transactions from 2010 onwards
+  can auto-fill accurate prices.
+
+P&L RECALCULATION FLOW
+────────────────────────
+  Triggered when:
+    - Admin adds, edits, or deletes an AssetTransaction
+    - Daily price update job runs (updates current prices)
+    - Admin manually triggers recalculation
+
+  For each AssetClass in the portfolio:
+    1. Sum all CREDIT transactions = quantity held, total cost basis in CHF
+    2. Subtract all DEBIT transactions (sales, withdrawals)
+    3. Fetch current price from PriceCache
+    4. currentValue = currentQuantity × currentPrice
+    5. unrealisedGain = currentValue - costBasis
+    6. unrealisedGainPct = unrealisedGain / costBasis × 100
+    7. Update AssetClass.valueChf, AssetClass.trendPct
+    8. Update holding model (MetalHolding.totalValueChf, etc.)
+    9. Sum all asset class values → Portfolio.totalValueChf
+   10. Recalculate Portfolio.allocationPct per asset class
+   11. Update Portfolio.lastCalculatedAt
+
+  QUARTERLY CHANGE:
+    - Store a PortfolioSnapshot at the end of each quarter (BullMQ cron job)
+    - quarterlyChangeChf = currentValue - snapshotValue from 90 days ago
+    - If no snapshot exists: show "—" in the UI, don't show incorrect value
+
+  [SUGGESTION — REALISED GAINS]:
+  Track sold positions separately:
+    - On a DEBIT/SELL transaction: calculate realised gain for that lot
+    - Store in a RealisedGain table linked to the transaction
+    - Show total realised P&L on the Performance page
+    - Important for tax reporting
+
+EXAMPLE: Admin adds gold purchase from 2015
+──────────────────────────────────────────
+  Admin form input:
+    transactionDate: 2015-03-14
+    type: METAL_PURCHASE
+    metal: GOLD (XAU)
+    quantity: 10 troy oz
+    [Click "Lookup price"] → system finds XAU/CHF on 2015-03-14 = CHF 1,147.20/oz
+    priceAtDate: 1,147.20 (auto-filled, admin can edit)
+    amountChf: 11,472.00 (calculated)
+    description: "Gold purchase — 10oz, allocated vault, Zürich"
+
+  What gets saved:
+    AssetTransaction { transactionDate: 2015-03-14, quantity: 10, priceAtDate: 1147.20,
+                       amountChf: 11472.00, type: METAL_PURCHASE, direction: CREDIT }
+
+  After recalculation (assuming today XAU/CHF = 2,400/oz):
+    MetalHolding.weightTroyOz = 10
+    MetalHolding.spotPriceChf = 2,400.00
+    MetalHolding.totalValueChf = 24,000.00
+    P&L = 24,000 - 11,472 = +12,528 CHF (+109.2%)
+
+  This is what the client sees: their gold is worth CHF 24,000
+  (bought for CHF 11,472 — an unrealised gain of CHF 12,528)
+
+PORTFOLIO SNAPSHOT (for quarterly/YTD comparisons)
+────────────────────────────────────────────────────
+model PortfolioSnapshot {
+  id                String    @id @default(cuid())
+  clientProfileId   String
+  snapshotDate      DateTime
+  totalValueChf     Decimal   @db.Decimal(18,2)
+  snapshotType      String    -- "quarterly", "annual", "manual"
+  assetBreakdown    Json      -- { MONETARY: x, SECURITIES: y, ... }
+  createdAt         DateTime  @default(now())
+
+  @@index([clientProfileId, snapshotDate])
+}
+
+================================================================================
+  9. API ARCHITECTURE
+================================================================================
+
+All API routes under /api. Next.js Route Handlers.
+All routes require authentication via requireSession() helper.
+Admin routes additionally require role check via canAccessClient() or equivalent.
+
+RESPONSE FORMAT
+────────────────
+  Success:  { data: T, meta?: { total, page, limit } }
+  Error:    { error: { code: string, message: string } }
+
+RATE LIMITS
+────────────
+  POST /api/auth/login:              5 per 10 min per clientId
+  POST /api/auth/totp/verify:       10 per 10 min per stepToken
+  POST /api/transfers:               3 per hour per userId
+  POST /api/vault/upload:           10 per day per userId
+  All other authenticated routes:  120 per minute per userId
+
+CLIENT ROUTES
+──────────────
+  GET  /api/auth/session              — get current session user
+  POST /api/auth/login                — step 2 (passphrase verify)
+  POST /api/auth/totp/verify          — step 3 (TOTP verify)
+  POST /api/auth/logout               — invalidate session
+  POST /api/auth/change-passphrase    — change passphrase (requires current + TOTP)
+
+  GET  /api/portfolio                 — full portfolio for client
+  GET  /api/assets/monetary           — monetary holdings detail
+  GET  /api/assets/securities         — securities detail
+  GET  /api/assets/metals             — metals detail
+  GET  /api/assets/digital            — digital assets detail
+  GET  /api/assets/real-estate        — real estate detail
+
+  GET  /api/transfers                 — list client's transfer requests
+  POST /api/transfers                 — submit new transfer request
+  GET  /api/transfers/[id]            — single transfer detail
+  PATCH /api/transfers/[id]/cancel    — cancel pending transfer
+
+  GET  /api/vault                     — list vault documents
+  POST /api/vault/upload              — get presigned S3 upload URL
+  GET  /api/vault/[docId]             — get document + signed download URL
+  PATCH /api/vault/[docId]/confirm    — confirm upload completed
+
+  GET  /api/messages                  — list message threads
+  POST /api/messages                  — create new thread
+  GET  /api/messages/[threadId]       — get thread with messages
+  POST /api/messages/[threadId]       — send a message in thread
+
+  GET  /api/statements                — list statements
+  GET  /api/statements/[id]/download  — signed download URL
+
+  GET  /api/notifications             — list + unread count
+  PATCH /api/notifications/[id]/read  — mark as read
+
+  GET  /api/beneficiaries             — list beneficiaries
+  POST /api/beneficiaries             — propose new beneficiary (pending admin verify)
+  PATCH /api/beneficiaries/[id]       — edit nickname (limited — cannot change IBAN)
+
+  PATCH /api/settings                 — update client-editable preferences
+
+ADMIN ROUTES (require role check on every route)
+──────────────────────────────────────────────────
+  POST /api/admin/clients                             — create client
+  GET  /api/admin/clients                             — list clients (scoped by role)
+  GET  /api/admin/clients/[clientId]                  — client profile
+  PATCH /api/admin/clients/[clientId]                 — edit client profile
+  PATCH /api/admin/clients/[clientId]/lock            — lock account
+  PATCH /api/admin/clients/[clientId]/unlock          — unlock account
+  POST /api/admin/clients/[clientId]/totp/reset       — generate new enrollment token
+
+  GET  /api/admin/clients/[clientId]/assets           — all asset classes
+  POST /api/admin/clients/[clientId]/assets           — create asset class
+  PATCH /api/admin/clients/[clientId]/assets/[id]     — edit asset class
+
+  GET  /api/admin/clients/[clientId]/transactions     — list transactions
+  POST /api/admin/clients/[clientId]/transactions     — add transaction (triggers P&L recalc)
+  PATCH /api/admin/clients/[clientId]/transactions/[id] — edit transaction
+  DELETE /api/admin/clients/[clientId]/transactions/[id] — delete transaction
+  POST /api/admin/clients/[clientId]/recalculate      — force P&L recalculation
+
+  GET  /api/admin/transfers                           — all pending (scoped by role)
+  PATCH /api/admin/transfers/[id]/approve             — approve
+  PATCH /api/admin/transfers/[id]/reject              — reject (requires reason)
+  PATCH /api/admin/transfers/[id]/execute             — mark executed + settlement ref
+
+  GET  /api/admin/messages                            — all threads (scoped)
+  POST /api/admin/messages/[threadId]                 — reply (supports HTML body)
+  PATCH /api/admin/messages/[threadId]/resolve        — resolve thread
+
+  GET  /api/admin/staff                               — list staff (scoped by role)
+  POST /api/admin/staff                               — create staff account
+  PATCH /api/admin/staff/[id]                         — edit staff
+  PATCH /api/admin/staff/[id]/deactivate              — deactivate
+
+  GET  /api/admin/audit                               — audit log (scoped by role)
+
+================================================================================
+  10. CLIENT PORTAL — ALL PAGES
+================================================================================
+
+10.1 LOGIN (/login)
+────────────────────
+  See Section 5 for full auth flow.
+  Wire existing UI to backend:
+    - Step 2: POST /api/auth/login → receive stepToken, store in React state
+    - Step 3: POST /api/auth/totp/verify → on success, router.replace('/dashboard/portfolio')
+    - Handle 429 rate limit: show "Too many attempts. Try again in X minutes."
+    - Handle locked account: "Your account has been locked. Please contact your advisor."
+    - On first login (mustChangePassphrase = true): after login, redirect to
+      /dashboard/security?prompt=change-passphrase (show mandatory passphrase change)
+
+10.2 PORTFOLIO OVERVIEW (/dashboard/portfolio)
+───────────────────────────────────────────────
+  Server Component. Fetch from GET /api/portfolio.
+  Everything here is READ-ONLY for the client.
+  Sections: (as designed in mock — all pre-populated by admin)
+    - Message banner (if unread messages exist)
+    - Hero card: total value, quarterly change, unrealised gain, next review
+    - Stats strip: custodian, risk profile, account status
+    - Quick actions (4): Transfer, Lodge Document, Download Statement, Message RM
+    - Asset class cards (6): click → navigate to asset detail page
+    - Precious metals breakdown
+    - Allocation bar chart
+    - Document vault (5 most recent)
+    - Recent activity (5 most recent)
+    - RM card: shows rmDisplayName, rmDisplayAvailability, "Send Message" button
+
+10.3 PERFORMANCE & ANALYTICS (/dashboard/performance)
+───────────────────────────────────────────────────────
+  - Time selector: 3M / 6M / YTD / 1Y / 3Y / All
+  - Portfolio value line chart (recharts) — from PortfolioSnapshot history
+  - Return table: YTD, 1Y, 3Y, Since Inception (from snapshots vs current)
+  - Asset class performance comparison bar chart
+  - Currency exposure breakdown
+  - Unrealised vs. Realised gains (if realised gain tracking enabled)
+  - All values from server — no client-side calculations
+
+10.4 MONETARY HOLDINGS (/dashboard/monetary)
+─────────────────────────────────────────────
+  - Summary: total cash in CHF equivalent across all currencies
+  - Currency tabs: All / CHF / EUR / USD / GBP
+  - Per account card: masked account number, balance, FX rate, account type
+  - For fixed deposits: maturity date, interest rate, accrued interest
+  - FX rates strip (from PriceCache, updated every 60 seconds via React Query)
+  - "Submit Transfer" CTA
+
+10.5 SECURITIES PORTFOLIO (/dashboard/securities)
+───────────────────────────────────────────────────
+  - Filter: All / Equities / Bonds / Funds / Other
+  - Sortable table (TanStack Table):
+    Name | Type | Qty | Price (CHF) | Value (CHF) | Cost Basis | P&L (CHF) | P&L (%)
+  - Colour-coded P&L: green positive, red negative
+  - Expandable row: shows ISIN, exchange, maturity (bonds), coupon
+
+10.6 PRECIOUS METALS (/dashboard/metals)
+──────────────────────────────────────────
+  - Live spot prices: XAU/CHF, XAG/CHF, XPT/CHF (from PriceCache)
+  - Per-metal card: weight, spot price, total value, bar description, vault location
+  - Vault grouping section
+  - 1Y spot price chart
+
+10.7 DIGITAL ASSETS (/dashboard/digital)
+──────────────────────────────────────────
+  - Disclaimer banner re: custody
+  - Live prices: BTC/CHF, ETH/CHF (from PriceCache, updated every 2 min)
+  - Per-asset card: quantity, price, 24h change, value, masked wallet ref
+  - 30-day price chart
+
+10.8 REAL ESTATE HOLDINGS (/dashboard/real-estate)
+─────────────────────────────────────────────────────
+  - Per-property card: name, address, type, acquisition cost, last valuation, status
+  - Title document link (if linked in vault)
+  - Valuation overdue warning if last valued > 6 months ago
+
+10.9 DOCUMENT VAULT (/dashboard/vault)
+────────────────────────────────────────
+  LISTING:
+  - Search by name or category
+  - Filter by category, status
+  - Rows: icon, name, category badge, status badge, date, size, actions
+  - "Lodge Document" button → upload flow (presigned S3)
+  - Sealed docs: lock icon, no download button
+  - Max upload: 50MB, allowed: PDF, DOCX, XLSX, PNG, JPG, HEIC
+
+  VIEWER (/dashboard/vault/[docId]):
+  - PDF: inline react-pdf viewer
+  - Others: metadata + download button
+
+10.10 TRANSFER / WITHDRAWAL REQUESTS (/dashboard/transfers)
+─────────────────────────────────────────────────────────────
+  LISTING:
+  - Tabs: All / Pending / Approved / Executed / Rejected
+  - Rows: reference ID, beneficiary, amount, date, status badge
+
+  NEW TRANSFER (/dashboard/transfers/new):
+  Multi-step form:
+    Step 1: Select source account (from client's monetary holdings)
+    Step 2: Select beneficiary (saved) OR propose new (pending admin verify)
+            — if proposing new: fill IBAN, BIC, bank, country, nickname
+    Step 3: Amount, reference, category, notes, optional attachment
+    Step 4: Review and confirm (checkbox: "I confirm this instruction")
+    → POST /api/transfers
+    → Transfer assigned to client's ownerAdmin automatically
+    → If amount > threshold (configurable in system config): flag for counter-approval
+
+  AFTER SUBMISSION:
+  - Status page with reference number
+  - "Under review by ZPF" message
+  - Assigned admin notified (in-panel + optional email)
+
+  CANCELLATION:
+  - Client can cancel if status = PENDING_REVIEW or UNDER_REVIEW
+  - Cannot cancel APPROVED or above
+
+10.11 STATEMENTS (/dashboard/statements)
+──────────────────────────────────────────
+  - List: title, period, type badge, generated date, file size, unread dot
+  - Download → signed S3 URL
+  - Preview → inline PDF modal
+  - "Request custom statement" → pre-fills new message thread
+
+10.12 SECURE MESSAGES (/dashboard/messages)
+─────────────────────────────────────────────
+  See Section 12 for full spec.
+  - Inbox: list threads, unread badge, RM name, subject, preview
+  - Thread view: message bubbles (client = right, admin = left)
+  - Send reply: textarea + send button + file attachment
+  - New thread: subject, category, body
+
+10.13 BENEFICIARIES (/dashboard/beneficiaries)
+────────────────────────────────────────────────
+  - List: nickname, name, country, currency, verified badge, last used
+  - "Propose New Beneficiary" button → form (IBAN, name, bank, country, nickname)
+  - Proposed beneficiaries: show "Pending verification" badge until admin approves
+  - Cannot use a beneficiary for a transfer until admin verifies it
+  - Cannot edit IBAN of a verified beneficiary (must deactivate and add new)
+  - Cannot delete — can only deactivate
+
+  [SUGGESTION]: Show a help text on the beneficiaries page:
+  "New beneficiaries require verification by your advisor before use.
+   Verification typically takes 1-2 business days."
+
+10.14 ACCOUNT PREFERENCES (/dashboard/settings)
+─────────────────────────────────────────────────
+  WHAT THE CLIENT CAN CHANGE ON THEIR OWN:
+  ─────────────────────────────────────────
+  (These are the ONLY fields clients can self-edit)
+
+    1. Display Currency
+       What: which currency to show values in (CHF, EUR, USD, GBP)
+       Note: this is display only — all values stored in CHF internally
+       Risk: none — purely cosmetic
+
+    2. Timezone
+       What: preferred timezone for timestamps and meeting times
+       Options: common timezones (Europe/Zurich, Africa/Lagos, America/New_York, etc.)
+       Risk: none
+
+    3. Language
+       What: interface language preference (EN for now; DE, FR later)
+       Risk: none
+
+    4. Notification Preferences
+       What: toggle which in-portal notification types they receive
+       Cannot disable: new message notifications (always on for security)
+       Can toggle: transfer status, statement ready, review reminder
+       Risk: low — does not affect security
+
+    5. Passphrase
+       What: change their own passphrase
+       Requires: current passphrase + live TOTP code to confirm
+       Effect: all other active sessions terminated after change
+       Risk: medium — properly protected with 2FA confirmation
+
+    6. [SUGGESTION] Profile Photo / Avatar Initials
+       What: upload a small avatar photo (shown in topbar)
+       Stored in S3 under /avatars/[clientId]/
+       Max: 2MB, JPG/PNG only
+       Risk: low
+
+  WHAT CLIENTS CANNOT CHANGE (admin-only):
+  ──────────────────────────────────────────
+    - Full legal name, display name
+    - Date of birth, nationality, domicile
+    - Client ID (never changes)
+    - KYC status or documents
+    - Risk profile, mandate type
+    - Assigned RM / admin
+    - Any financial data (balances, assets, transactions)
+    - TOTP secret (must contact ZPF — admin generates new enrollment link)
+    - Account status (lock/unlock)
+
+  [SUGGESTION — FOR ADMIN CONSIDERATION]:
+  Some banks allow clients to update their mailing address or phone number
+  themselves, but flag it for admin review before it takes effect. You could
+  implement a "pending approval" field model:
+    - Client submits new phone number or address
+    - Stored as pendingPhoneNumber on ClientProfile
+    - Admin sees notification: "Client X has requested a contact update"
+    - Admin approves → moves to actual field
+    - Admin rejects → pendingPhoneNumber cleared, client notified
+  This gives clients some autonomy while keeping admin in control of identity fields.
+
+10.15 SECURITY SETTINGS (/dashboard/security)
+───────────────────────────────────────────────
+  - Active sessions: device, IP, city, last active, "Terminate" per session
+  - "Terminate all other sessions" button
+  - Login history (last 10): date, IP, city, device — failed attempts in red
+  - Passphrase change form (requires current passphrase + TOTP)
+  - Two-factor authenticator:
+    - Status: "Active — enrolled [date]"
+    - "Reset authenticator" → opens message thread to RM:
+      "I need to reset my two-factor authenticator app."
+      (Admin then generates new enrollment link manually — no self-service)
+  - Backup codes: "View backup codes" (confirm with TOTP first)
+  - "Regenerate backup codes" (confirms with TOTP, invalidates old codes)
+
+================================================================================
+  11. ADMIN PANEL — FULL SPECIFICATION
+================================================================================
+
+Admin uses a separate login at /admin/login.
+Same 3-step flow, but checks role ≠ CLIENT on session creation.
+Admin sidebar is different from client sidebar.
+Every admin action is automatically audit-logged via middleware.
+
+11.1 SUPER ADMIN (/admin — full view)
+──────────────────────────────────────
+  Overview Dashboard:
+    - Total AUM across ALL clients (sum of all Portfolio.totalValueChf)
+    - Total clients, active clients, locked clients
+    - Pending transfers (all admins)
+    - Unread messages (all threads)
+    - Active Major Admins count, active Admins count
+    - System health indicators (DB, Redis, S3 connectivity)
+    - AUM trend chart (monthly, last 12 months, from PortfolioSnapshots)
+
+  Additional capabilities vs Major Admin:
+    - See ALL clients, ALL admins, ALL activity
+    - Create Major Admin accounts
+    - Re-assign a client from one admin to another
+    - View system config and change all settings
+    - Access full audit log across entire system
+
+11.2 MAJOR ADMIN
+─────────────────
+  Overview Dashboard (scoped to their tree):
+    - AUM across all their admins' clients
+    - Pending transfers under their admins
+    - Unread messages from their admins' clients
+    - Admin activity feed (recent actions by admins under them)
+    - List of their Admins with: client count, AUM, last active, pending items count
+
+  Admin Activity View:
+    - Full audit log for each Admin under them, filterable
+    - Can see every transaction an admin added, every approval made
+    - Can see every message an admin sent
+    - Can intervene: re-assign a client, respond to a message if admin is offline
+
+  Large Transfer Counter-Approval:
+    - Transfers flagged AWAITING_COUNTER appear in their dashboard
+    - They review: client name, amount, beneficiary, admin notes
+    - Approve (adds their userId to counterApprovedById) or Reject
+    - After counter-approval: transfer moves to APPROVED → admin executes
+
+11.3 ADMIN (Standard)
+──────────────────────
+  Overview Dashboard (their clients only):
+    - Total AUM of their clients
+    - Pending transfer approvals (from their clients)
+    - Unread messages from their clients
+    - Clients with KYC expiring in next 30 days
+    - Clients with documents pending review
+    - Recent activity from their clients
+
+  Sidebar navigation:
+    Overview | My Clients | Transfers | Messages | Audit (own) | Settings
+
+11.4 CLIENT ACCOUNT CREATION (/admin/clients/new)
+───────────────────────────────────────────────────
+  Multi-step form (admin only):
+
+  STEP 1 — Identity
+    Full legal name (required)
+    Display name (pre-filled, editable — e.g., "Adebayo S.")
+    Initials (auto-generated, editable — "AS")
+    Date of birth
+    Nationality (country select)
+    Domicile country (country select)
+    Phone number (optional)
+
+  STEP 2 — Account Settings
+    Risk profile (select: Conservative / Balanced / Growth / Aggressive)
+    Mandate type (Advisory / Discretionary / Execution Only)
+    KYC status (default: VERIFIED — admin has done checks offline)
+    KYC expiry date (optional)
+
+  STEP 3 — Display RM Information
+    (What the client sees in their portal as their "Relationship Manager")
+    RM Display Name (e.g., "Dr. Markus von Steiner")
+    RM Title
+    RM Initials
+    RM Phone
+    RM Availability message
+    RM Next Call date/time (optional)
+    Note: this is purely display data — it's not linked to another admin account
+
+  STEP 4 — Credentials Preview
+    System shows:
+      ClientID: ZPF-XXXX-XXXX (auto-generated, shown here for first time)
+      Initial Passphrase: [24-char random] (shown ONCE — "Copy and store securely")
+      TOTP Enrollment URL: auth.zpfinanz.ch/enroll?token=xxxxx (72hr expiry)
+    "Download Credential Sheet" button → one-time PDF generation (never stored)
+    "I have securely noted these credentials" checkbox (required to proceed)
+
+  STEP 5 — Confirm
+    Summary of all entries
+    "Create Client Account" submit
+
+  After creation:
+    - ClientProfile created in DB
+    - TotpEnrollmentToken created
+    - Portfolio created (empty — admin populates next)
+    - Asset classes created (empty — admin populates next)
+    - Welcome message auto-created in client's message inbox:
+      "Welcome to ZPF. Your portal is ready. Please complete your TOTP setup
+       using the link provided, then log in to access your portfolio."
+
+11.5 ASSET & TRANSACTION MANAGEMENT
+──────────────────────────────────────
+  Accessed via: /admin/clients/[clientId]/portfolio
+             and /admin/clients/[clientId]/transactions
+
+  PORTFOLIO SETUP (admin's view of client portfolio):
+    - Same visual layout as client sees, but with "Edit" pencil on every card
+    - Admin can click any asset class card to edit its display settings
+    - "Add Transaction" button available on every asset class
+
+  TRANSACTION FORM (/admin/clients/[clientId]/transactions — "Add Transaction"):
+    Fields:
+      Asset Class:        [select from client's asset classes]
+      Specific Holding:   [select from holdings within that class, or "New Holding"]
+      Transaction Type:   [dropdown — depends on asset class selected]
+      Direction:          [auto-set from type, but overridable]
+      Transaction Date:   [date picker — can be any past date]
+      Quantity:           [number — oz, shares, BTC, etc. — shown if applicable]
+      Price at Date:      [number] [Lookup button → queries PriceHistory]
+      FX Rate at Date:    [number, if non-CHF] [Lookup button → queries PriceHistory]
+      Amount (native):    [auto-calculated: quantity × priceAtDate]
+      Amount (CHF):       [auto-calculated: amountNative × fxRateAtDate]
+      Description:        [text — internal admin description]
+      Client Activity Label: [text — what the client sees in their activity feed]
+      Show in Client Activity: [checkbox]
+      Reference:          [optional — bank ref, SWIFT ref]
+
+    On save:
+      → POST /api/admin/clients/[clientId]/transactions
+      → Server validates and saves transaction
+      → Triggers P&L recalculation job (BullMQ — async, shows "Recalculating..." indicator)
+      → Portfolio.totalValueChf and all computed fields updated
+      → Admin sees updated portfolio immediately after recalc completes
+
+  EDITING TRANSACTIONS:
+    - Admin can edit any transaction (correcting errors)
+    - Each edit creates an AuditLog entry with the before/after values
+    - P&L recalculated after edit
+
+  DELETING TRANSACTIONS:
+    - Soft delete (deletedAt field, exclude from calculations)
+    - Requires confirmation: "This will affect the client's portfolio balance"
+    - AuditLog entry created
+
+  ADDING A NEW HOLDING (e.g., new metal vault, new currency account):
+    - If admin selects "New Holding" in the transaction form, a holding creation
+      sub-form appears inline
+    - For metals: enters metal type, vault location, bar description
+    - For monetary: enters currency, account type, masked account number
+    - For securities: enters ticker/ISIN, name, exchange, type
+    - The holding is created and the transaction is attached to it
+
+11.6 WITHDRAWAL APPROVAL WORKFLOW
+────────────────────────────────────
+  Client submits transfer → assigned admin is notified:
+    - In-panel: badge on "Transfers" nav item, dashboard counter
+    - Optional email: if admin has notificationEmail set and emailOnTransferRequest = true
+
+  ADMIN TRANSFERS VIEW (/admin/transfers):
+    Tabs: Pending (default) / Under Review / Approved / Executed / Rejected / All
+
+    Each transfer card shows:
+      Client name + ID
+      Amount: [currency] [amount] (≈ CHF [chf_amount])
+      Beneficiary: [full name] | [country] | [masked IBAN]
+      Bank: [bank name] | [BIC]
+      Reference: [payment reference]
+      Category: [label]
+      Client notes: [text if provided]
+      Submitted: [date/time]
+      Attachments: [downloadable list]
+
+    Action buttons:
+      "Begin Review" → status: UNDER_REVIEW, locks it to this admin
+      "Approve" → if below threshold: status: APPROVED
+                  if above threshold: status: AWAITING_COUNTER (Major Admin notified)
+      "Reject" → requires rejection reason text (shown to client)
+      "Request Clarification" → opens/creates message thread with client
+      "Mark Executed" (after APPROVED) → enter settlement reference, set EXECUTED
+        → creates Activity record on client account
+        → sends Notification to client: "Your transfer has been executed"
+
+  LARGE TRANSFER (counter-approval):
+    Threshold set in System Config (default CHF 500,000)
+    When triggered:
+      - Status: AWAITING_COUNTER
+      - Major Admin (or Super Admin) receives notification
+      - Transfer appears in Major Admin's dashboard with "Counter-Approval Required" badge
+      - Major Admin reviews all details, approves or rejects
+      - If approved: status → APPROVED, admin can then execute
+
+11.7 DOCUMENT & KYC MANAGEMENT
+─────────────────────────────────
+  /admin/clients/[clientId]/documents:
+    Same list as client sees, plus admin actions:
+      - Seal / Unseal (sealed docs cannot be downloaded by client)
+      - Set Review Due date
+      - Mark review complete (enter review notes)
+      - Set expiry date (for time-limited docs like POA)
+      - Upload on behalf of client (lodge by staff)
+      - Soft delete (with reason — never hard delete)
+      - Add internal notes (visible to staff only)
+
+  /admin/clients/[clientId]/kyc:
+    - KYC status display + change (PENDING / VERIFIED / EXPIRED / UNDER_REVIEW)
+    - KYC verified date, expiry date
+    - KYC documents (filtered view from vault: DocCategory = KYC_AML)
+    - PEP screening status (manual flag)
+    - AML notes (admin-only text field)
+    - Source of wealth notes (admin-only)
+    - History of KYC status changes (audit trail)
+
+11.8 MESSAGING (Panel + Email)
+────────────────────────────────
+  /admin/messages (or /admin/clients/[clientId]/messages):
+    - All threads scoped to this admin's clients
+    - Left panel: thread list (client name, subject, preview, unread badge)
+    - Right panel: full thread view
+
+    COMPOSING A REPLY (admin):
+      - Rich text editor (Tiptap): bold, italic, lists, links
+      - "Internal note" toggle: message is visible to all staff but NOT the client
+      - File attachment: upload up to 3 files (stored in S3)
+      - Thread actions: Resolve / Archive / Escalate (to Major Admin) / Change Priority
+
+    ADMIN EMAIL NOTIFICATIONS:
+      - If admin has notificationEmail set AND emailOnNewMessage = true:
+        When a client sends a message, admin receives an email:
+          From: noreply@zpfinanz.ch
+          To: [admin notificationEmail]
+          Subject: "New message from [Client Display Name] — [Thread Subject]"
+          Body: "A client has sent a new message. Log in to the admin panel to respond."
+          (Never include message content in email — privacy)
+      - Email is sent via Resend (BullMQ job)
+      - notificationEmail is optional and can be added at any time from admin's
+        own settings (/admin/settings or via Super Admin editing staff profile)
+
+    SENDING FIRST MESSAGE TO CLIENT (welcome message):
+      - Auto-created on account creation
+      - Admin can also manually start a thread from client profile
+
+11.9 AUDIT & ACTIVITY LOGS
+────────────────────────────
+  Every admin action that mutates data auto-creates an AuditLog entry.
+  Implement via a server-side helper:
+
+    auditLog(userId, action, entityType, entityId, metadata)
+    called at the end of every successful API mutation handler
+
+  Actions logged:
+    CLIENT_CREATED, CLIENT_LOCKED, CLIENT_UNLOCKED
+    TRANSACTION_ADDED, TRANSACTION_EDITED, TRANSACTION_DELETED
+    TRANSFER_APPROVED, TRANSFER_REJECTED, TRANSFER_EXECUTED
+    DOCUMENT_SEALED, DOCUMENT_UNSEALED, DOCUMENT_UPLOADED
+    MESSAGE_SENT, THREAD_RESOLVED
+    KYC_STATUS_CHANGED, RISK_PROFILE_CHANGED
+    STAFF_CREATED, STAFF_DEACTIVATED
+    TOTP_ENROLLMENT_GENERATED
+    LOGIN_SUCCESS, LOGIN_FAILED, LOGOUT
+
+  /admin/audit:
+    - Filterable table: by admin, by client, by action, by date range
+    - Columns: Timestamp | Admin | Action | Client | Entity | IP | Notes
+    - Non-editable, non-deletable (enforced at DB level)
+    - Export to CSV for compliance
+    - [SUGGESTION]: Flag anomalies — e.g., 5+ failed logins in 10 min,
+      large transfer approved quickly (< 2 min review time), etc.
+
+11.10 STAFF MANAGEMENT (/admin/staff)
+──────────────────────────────────────
+  Super Admin sees all staff.
+  Major Admin sees only admins under them.
+  Admin cannot access staff management.
+
+  Staff list:
+    - Name, role badge, parent admin (for ADMIN role), client count, AUM, last login
+    - Status: Active / Inactive
+
+  Create staff (/admin/staff/new):
+    - Full name, display name, initials, title, department
+    - Role: ADMIN or MAJOR_ADMIN (Super Admin can create both)
+    - For ADMIN: select parent Major Admin
+    - Notification email (optional)
+    - System generates clientId (ZPF-STAFF-XXXX), passphrase, TOTP enrollment link
+    - Same credential delivery flow as clients
+
+  Edit staff:
+    - Change role (Super Admin only)
+    - Change parent admin (Super Admin only)
+    - Add / change notification email
+    - Toggle email notification preferences
+    - Reset TOTP (generates new enrollment token)
+    - Deactivate (soft delete — audit trail preserved)
+
+11.11 SYSTEM CONFIGURATION (/admin/config)
+────────────────────────────────────────────
+  Super Admin only.
+
+  Settings:
+    Transfer counter-approval threshold:    CHF [amount] (default: 500,000)
+    Session idle timeout:                   [hours] (default: 8)
+    TOTP enrollment link expiry:            [hours] (default: 72)
+    Max failed TOTP attempts before lock:   [count] (default: 10)
+    Max document upload size (MB):          [MB] (default: 50)
+    Allowed file types:                     [comma-separated]
+    Live price updates:
+      FX rate source:                       [Frankfurter / Manual]
+      Metals price source:                  [metals-api / Manual]
+      Crypto price source:                  [CoinGecko / Manual]
+    Price update intervals (minutes):
+      FX:     [default: 60]
+      Metals: [default: 5]
+      Crypto: [default: 2]
+    Maintenance mode:                       [toggle] (shows banner to all clients)
+    Maintenance message:                    [text]
+    Contact email (shown on public page):   [email]
+
+================================================================================
+  12. SECURE MESSAGING SYSTEM
+================================================================================
+
+  See Section 11.8 for admin side.
+
+ARCHITECTURE
+────────────
+  Messages stored in PostgreSQL (plaintext in DB, protected by TLS + access control).
+  Do NOT call it "end-to-end encrypted" — it is not. Call it "secure in-portal messaging."
+
+REAL-TIME UPDATES
+──────────────────
+  Client side: poll every 10 seconds via React Query refetchInterval
+  Admin side: poll every 15 seconds
+  [SUGGESTION]: Upgrade to Server-Sent Events in Phase 2 for instant delivery
+
+THREAD LIFECYCLE
+─────────────────
+  OPEN → (admin replies) → AWAITING_CLIENT → (client replies) → AWAITING_STAFF → ...
+  → RESOLVED (admin resolves) → can be reopened by either party
+
+ATTACHMENTS
+────────────
+  - Max 10MB per file, max 3 per message
+  - Stored in S3 /message-attachments/[threadId]/[messageId]/
+  - Access: signed URLs (30-second expiry)
+  - Admin attachments: also accessible to Major Admin and Super Admin above them
+
+================================================================================
+  13. NOTIFICATION SYSTEM
+================================================================================
+
+  EVENT                         TRIGGER                 RECIPIENT(S)
+  ─────────────────────────────────────────────────────────────────────────
+  NEW_MESSAGE                   Client sends message     Assigned admin (in-panel + optional email)
+  NEW_MESSAGE                   Admin sends message      Client (in-portal)
+  TRANSFER_SUBMITTED            Client submits request   Assigned admin (in-panel + optional email)
+  TRANSFER_APPROVED             Admin approves           Client (in-portal)
+  TRANSFER_REJECTED             Admin rejects            Client (in-portal)
+  TRANSFER_EXECUTED             Admin marks executed     Client (in-portal)
+  TRANSFER_COUNTER_REQUIRED     Amount > threshold       Major Admin (in-panel)
+  DOCUMENT_LODGED               Admin uploads doc        Client (in-portal)
+  STATEMENT_READY               Admin generates PDF      Client (in-portal)
+  KYC_EXPIRING                  30 days before expiry    Admin + Major Admin
+  ACCOUNT_LOCKED                After 10 failed TOTP     Assigned admin (in-panel + email)
+  SECURITY_ALERT                Unusual login detected   Admin + Super Admin
+  BENEFICIARY_PROPOSED          Client proposes          Assigned admin (in-panel)
+
+DELIVERY
+─────────
+  In-portal: badges + topbar banner
+  Email: Resend — only when admin has notificationEmail configured
+  Never email sensitive data — only "you have a new notification, log in to view"
+
+================================================================================
+  14. DOCUMENT VAULT ARCHITECTURE
+================================================================================
+
+UPLOAD FLOW
+────────────
+  1. Client (or admin) selects file
+  2. App calls POST /api/vault/upload { fileName, mimeType, category }
+  3. Server validates auth, file type, size limit
+  4. Server creates VaultDocument record (status: PENDING)
+  5. Server generates presigned S3 PUT URL (60-second expiry)
+  6. Client uploads directly to S3 via presigned URL
+  7. Client calls PATCH /api/vault/[docId]/confirm
+  8. Server marks document ACTIVE
+  9. [SUGGESTION]: BullMQ job scans file with ClamAV before marking ACTIVE.
+     Status goes: PENDING → SCANNING → ACTIVE (or QUARANTINED if infected)
+
+DOWNLOAD FLOW
+──────────────
+  1. Call GET /api/vault/[docId]
+  2. Server checks: auth, ownership, not sealed (for client)
+  3. Server generates presigned S3 GET URL (60-second expiry)
+  4. Creates DocDownloadLog and AuditLog entries
+  5. Returns { signedUrl, expiresIn: 60 }
+  6. Client opens URL in new tab
+
+S3 STRUCTURE
+─────────────
+  Bucket: zpf-vault-prod (private, no public access, versioning on, SSE-KMS)
+  /vault/[clientId]/[docId]/[filename]
+  /message-attachments/[threadId]/[messageId]/[filename]
+  /transfer-attachments/[transferId]/[filename]
+  /statements/[clientId]/[statementId]/[filename]
+  /avatars/[userId]/avatar.[ext]               (if avatar upload enabled)
+  Region: eu-central-1 (Frankfurt)
+
+================================================================================
+  15. SECURITY INFRASTRUCTURE
+================================================================================
+
+TRANSPORT & HEADERS
+─────────────────────
+  HTTPS only, HSTS with preload.
+  All headers set in next.config.ts:
+
+    Strict-Transport-Security:   max-age=31536000; includeSubDomains; preload
+    X-Frame-Options:             DENY
+    X-Content-Type-Options:      nosniff
+    Referrer-Policy:             no-referrer
+    Permissions-Policy:          geolocation=(), camera=(), microphone=()
+    Cross-Origin-Opener-Policy:  same-origin
+    Content-Security-Policy:     (strict, nonce-based for scripts)
+
+APPLICATION-LEVEL ENCRYPTION
+──────────────────────────────
+  Fields encrypted before storing in DB (AES-256-GCM via Node.js crypto):
+    - Beneficiary.iban
+    - User.totpSecretEnc
+  Storage format: base64(iv + authTag + ciphertext) as a single string
+  Key source: TOTP_ENCRYPTION_KEY env variable (32 bytes)
+  Key rotation: annually — decrypt all, re-encrypt with new key, update env
+
+RATE LIMITING
+──────────────
+  All auth endpoints: Upstash Redis sliding window
+  /api/auth/login:             5 per 10 min per clientId
+  /api/auth/totp/verify:      10 per 10 min per stepToken
+  /api/admin/*:               60 per minute per adminId
+  All other authenticated:   120 per minute per userId
+
+CSRF
+─────
+  Next.js App Router server actions: built-in CSRF protection
+  API routes: validate Origin/Referer header against allowed origins
+
+SESSION SECURITY
+─────────────────
+  Cookie: __zpf_sid — HttpOnly, Secure, SameSite=Strict
+  Sessions in DB — immediate revocation possible
+  After passphrase change: all sessions revoked
+  Admin can revoke all sessions for any user from admin panel
+
+INPUT VALIDATION
+─────────────────
+  Zod schemas on the server for every mutation
+  Message body: sanitize with sanitize-html before storing (prevent XSS in admin panel)
+  File uploads: validate MIME type AND file header magic bytes (not just extension)
+
+DEPENDENCY SECURITY
+─────────────────────
+  npm audit on every CI run
+  Dependabot enabled
+  eslint-plugin-security on all code
+
+SECRETS
+────────
+  DATABASE_URL, DIRECT_URL, APP_SECRET, TOTP_ENCRYPTION_KEY,
+  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME,
+  UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, RESEND_API_KEY
+  All in Vercel Environment Variables — never in code or git
+
+================================================================================
+  16. THIRD-PARTY INTEGRATIONS
+================================================================================
+
+LIVE PRICE FEEDS (all cached in Redis + DB PriceCache)
+───────────────────────────────────────────────────────
+  FX Rates:
+    Free: Frankfurter API (api.frankfurter.app) — ECB rates, daily updates
+    Update: every 60 minutes
+
+  Precious Metals:
+    Option A (free): manual admin entry (always available as fallback)
+    Option B (paid): metals-api.com (~$15/month for 1,000 req/day)
+    Update: every 5 minutes during London market hours
+
+  Crypto:
+    CoinGecko free tier — rate limited but sufficient for 2 assets
+    Endpoint: /api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=chf
+    Update: every 2 minutes
+
+  HISTORICAL PRICE DATA (for transaction form lookups):
+    Metals: metals-api.com historical endpoint
+    Crypto: CoinGecko /api/v3/coins/{id}/history?date=DD-MM-YYYY
+    FX:     Frankfurter API historical endpoint
+    All fetched on-demand when admin uses "Lookup historical price" button
+    Cached in PriceHistory table after first fetch
+
+FILE STORAGE
+─────────────
+  AWS S3 — see Section 14
+
+EMAIL
+──────
+  Resend (resend.com) — admin notification emails only
+  No client emails ever (privacy-first design)
+
+AUTH LIBRARY
+─────────────
+  lucia-auth — session management, cookie handling, Prisma adapter
+
+BACKGROUND JOBS
+────────────────
+  BullMQ + Redis:
+    price-updater:         runs every 2-60 min (per asset type)
+    pnl-recalculator:      triggered on transaction add/edit/delete
+    statement-generator:   triggered by admin
+    portfolio-snapshot:    runs at end of each quarter (cron)
+    email-dispatcher:      triggered by notification system
+    doc-virus-scan:        triggered on document upload (if ClamAV enabled)
+
+================================================================================
+  17. STATE MANAGEMENT
+================================================================================
+
+  Server state:  Next.js Server Components for initial load + React Query for
+                 client-side data that refreshes (prices, notifications, messages)
+  Client state:  React useState for UI only (modals, tabs, form steps)
+  Context:       Auth session data, user preferences only
+
+  React Query keys:
+    ['portfolio', userId]
+    ['assets', userId, assetType]
+    ['messages', userId]
+    ['messages', userId, threadId]
+    ['notifications', userId]
+    ['transfers', userId]
+    ['vault', userId]
+    ['prices', ticker]            — refetch interval: 2-60 min per type
+    ['admin', 'clients']          — admin only
+    ['admin', 'transfers']        — admin only
+
+================================================================================
+  18. TESTING STRATEGY
+================================================================================
+
+UNIT TESTS (Vitest)
+────────────────────
+  - All Zod validation schemas
+  - lib/format.ts (currency, date formatters)
+  - lib/pnl.ts (P&L calculation engine — critical to test thoroughly)
+  - lib/permissions.ts (all role checks)
+  - TOTP generation and verification
+  - Argon2 hash and verify
+  - AES encryption / decryption
+  - Rate limit logic
+  - IBAN validation (ibantools)
+
+INTEGRATION TESTS (Vitest + test Postgres)
+───────────────────────────────────────────
+  - Full auth flow: login → TOTP → session creation
+  - Transfer submission and all status transitions
+  - Message thread creation and reply
+  - Transaction add → P&L recalculation output
+  - Admin permission checks (admin cannot see another admin's client)
+  - Ownership chain enforcement
+
+E2E TESTS (Playwright)
+───────────────────────
+  - Login flow (3 steps, happy path + error states)
+  - Portfolio overview loads correctly
+  - Transfer: submit → status page → admin approval → status update
+  - Message: compose → send → admin view
+  - Document: upload → view → download
+  - Admin: create client → add transaction → verify portfolio updated
+  - Admin: approve transfer
+  - Role restriction: admin cannot access /admin/staff
+
+SECURITY TESTS
+───────────────
+  - OWASP ZAP scan on staging
+  - Rate limit enforcement (hit limits, verify 429)
+  - Auth bypass: try to skip TOTP step (use stale stepToken)
+  - IDOR: access another client's portfolio/documents/transfers
+  - File upload: oversized, wrong type, malicious filename, polyglot file
+  - XSS: inject script in message body, document name
+  - Permissions: each role trying to access higher-role endpoints
+
+================================================================================
+  19. DEPLOYMENT & INFRASTRUCTURE
+================================================================================
+
+ENVIRONMENTS
+─────────────
+  local    → localhost:3000, local Postgres
+  staging  → staging.zpfinanz.ch — Vercel preview
+  prod     → portal.zpfinanz.ch  — Vercel production
+
+VERCEL CONFIG
+──────────────
+  Region:         eu-central1 (Frankfurt)
+  Edge runtime:   middleware.ts only
+  Node runtime:   all API routes (need crypto, argon2, etc.)
+  Analytics:      enabled (privacy-safe)
+
+PRODUCTION CHECKLIST
+─────────────────────
+  [ ] npm audit — zero high/critical
+  [ ] All env variables set in Vercel
+  [ ] Database connection pooling (Supabase PgBouncer)
+  [ ] Redis reachable
+  [ ] S3 bucket: versioning on, public access blocked, SSE-KMS on
+  [ ] HSTS preload submitted
+  [ ] CSP evaluated (A rating on securityheaders.com)
+  [ ] OWASP ZAP scan completed
+  [ ] Sentry configured
+  [ ] Uptime monitoring configured
+  [ ] Database daily backup configured, test restore done
+  [ ] Postgres RLS on audit_logs (deny UPDATE, DELETE)
+  [ ] Rate limits tested
+  [ ] All tests passing
+  [ ] Super Admin account seeded (strong passphrase, TOTP enrolled)
+  [ ] First Major Admin and Admin created
+  [ ] First client onboarded end-to-end (smoke test)
+  [ ] Staff trained on admin panel
+
+CI/CD (GitHub Actions)
+───────────────────────
+  Pull request:   npm audit → ESLint → TypeScript check → Vitest → Playwright → Preview deploy
+  Merge to main:  All above → Vercel production deploy → prisma migrate deploy
+
+================================================================================
+  20. COMPLIANCE & REGULATORY
+================================================================================
+
+SWISS DSG / GDPR
+─────────────────
+  - Privacy policy accessible from login page (before authentication)
+  - DSAR: Super Admin can export all personal data for a given client
+  - Right to erasure: flagged as not fully possible during retention period
+  - Data retention policy: financial records 10 years (Swiss AML Art. 7)
+  - Soft delete everywhere (deletedAt field) — hard delete only after retention period
+
+FINMA / AML / KYC
+──────────────────
+  - KYC status tracked per client (verified date, expiry date)
+  - KYC expiry alerts to admin 30 days before (Notification + email)
+  - Beneficial ownership captured (nationality, domicile)
+  - PEP flag per client (manual admin field)
+  - AML notes per client (admin-only text)
+  - Source of wealth notes (admin-only)
+  - All financial transactions logged with date, amount, counterparty
+  - Transfer approvals: segregation of duties enforced (client submits, admin approves)
+  - Large transfers: require counter-approval (Major Admin or Super Admin)
+
+AUDIT TRAIL IMMUTABILITY
+─────────────────────────
+  Postgres Row Level Security on audit_logs:
+    REVOKE UPDATE, DELETE ON audit_logs FROM application_user;
+  Only INSERT allowed from application.
+  AuditLog records include: userId, action, entityType, entityId, IP, timestamp, metadata.
+
+RECORD RETENTION
+─────────────────
+  No hard delete on: VaultDocument, AssetTransaction, Activity, AuditLog, Message
+  All use soft delete (deletedAt) or archival
+  After retention period (10 years): authorised Super Admin can permanently purge,
+  with a final AuditLog entry recording the purge
+
+================================================================================
+  21. PERFORMANCE TARGETS
+================================================================================
+
+  Time to First Byte:              < 200ms (Vercel edge middleware)
+  Largest Contentful Paint:        < 1.5s
+  Portfolio page (full load):      < 800ms
+  Admin client list (50 records):  < 600ms
+  Message send:                    < 300ms
+  Signed URL generation:           < 500ms
+  P&L recalculation (1 client):    < 2s (background job — does not block UI)
+  Price cache hit:                  < 50ms (Redis)
+
+  Lighthouse: Performance > 90, Accessibility > 95, Best Practices > 95
+
+================================================================================
+  22. BUILD ORDER & MILESTONES
+================================================================================
+
+PHASE 1 — FOUNDATION (Weeks 1-2)
+──────────────────────────────────
+  [ ] Prisma schema — all models
+  [ ] PostgreSQL setup (Supabase)
+  [ ] Lucia auth + argon2 integration
+  [ ] Wire login page to real backend (all 3 steps)
+  [ ] Middleware.ts (route protection + role enforcement)
+  [ ] TOTP enrollment page (auth.zpfinanz.ch/enroll)
+  [ ] Upstash Redis rate limiting
+  [ ] AWS S3 bucket setup
+  [ ] Seed script: Super Admin account
+
+PHASE 2 — CLIENT PORTAL DATA LAYER (Weeks 3-4)
+────────────────────────────────────────────────
+  [ ] P&L calculation engine (lib/pnl.ts) — unit tested before use
+  [ ] PriceHistory pre-population job (metals, crypto, FX)
+  [ ] PriceCache update jobs (BullMQ)
+  [ ] Portfolio overview: wire to real DB data
+  [ ] All asset class detail pages: wire to real DB
+  [ ] Skeleton loaders + error states everywhere
+  [ ] React Query setup for all client data
+
+PHASE 3 — ADMIN PANEL CORE (Weeks 5-7)
+────────────────────────────────────────
+  [ ] Admin login (separate route, role check)
+  [ ] Admin layout + sidebar (role-aware: Super/Major/Admin views)
+  [ ] Client creation form (all 5 steps) + credential sheet PDF
+  [ ] TOTP enrollment token generation
+  [ ] Transaction form (add historical) + historical price lookup
+  [ ] P&L recalculation trigger + UI indicator
+  [ ] Client profile view (admin)
+  [ ] Permission helpers (canAccessClient, etc.) — all API routes use these
+
+PHASE 4 — TRANSFERS & APPROVALS (Week 8)
+──────────────────────────────────────────
+  [ ] Client: transfer request multi-step form
+  [ ] Beneficiary proposal flow (client + admin verify)
+  [ ] Admin: transfer approval/rejection/execution workflow
+  [ ] Large transfer counter-approval (Major Admin flow)
+  [ ] Transfer status notifications (in-portal)
+  [ ] Optional admin email notifications (Resend)
+
+PHASE 5 — MESSAGING (Week 9)
+──────────────────────────────
+  [ ] MessageThread + Message models + APIs
+  [ ] Client inbox + thread view + reply
+  [ ] Admin panel messaging (Tiptap editor + internal notes)
+  [ ] Thread lifecycle management (resolve, archive, escalate)
+  [ ] New thread from client
+  [ ] Admin email on new message (if configured)
+  [ ] Polling (10-second refetch interval)
+
+PHASE 6 — DOCUMENTS & STATEMENTS (Week 10)
+────────────────────────────────────────────
+  [ ] Document vault: client upload flow (presigned S3)
+  [ ] Document vault: client list + viewer (react-pdf)
+  [ ] Admin: document management (seal, review, upload on behalf)
+  [ ] Statement generation (admin-triggered, PDF via @react-pdf/renderer)
+  [ ] Statement list + download for client
+  [ ] KYC management (admin)
+
+PHASE 7 — ADMIN HIERARCHY & STAFF (Week 11)
+─────────────────────────────────────────────
+  [ ] Staff creation (Super Admin + Major Admin)
+  [ ] Major Admin: admin activity view
+  [ ] Scoping enforcement on all queries (by role + ownership chain)
+  [ ] Major Admin counter-approval flow
+  [ ] Audit log viewer (all roles, scoped)
+  [ ] System config page (Super Admin)
+
+PHASE 8 — NOTIFICATIONS & PREFERENCES (Week 12)
+──────────────────────────────────────────────────
+  [ ] Full Notification system (all events from Section 13)
+  [ ] Topbar badge counts + banner
+  [ ] Account preferences page (client-editable fields)
+  [ ] Security settings page (sessions, passphrase change, backup codes)
+  [ ] First-login passphrase change prompt
+  [ ] Welcome modal (first login)
+
+PHASE 9 — SECURITY HARDENING (Week 13)
+────────────────────────────────────────
+  [ ] Security headers (CSP, HSTS, etc.) in next.config.ts
+  [ ] AES encryption for IBAN + TOTP secrets
+  [ ] Postgres RLS on audit_logs
+  [ ] Input sanitization (sanitize-html on messages)
+  [ ] File upload: magic byte validation + optional ClamAV scan
+  [ ] OWASP ZAP scan on staging, fix findings
+
+PHASE 10 — TESTING & LAUNCH (Weeks 14-15)
+───────────────────────────────────────────
+  [ ] Vitest unit tests (pnl.ts, permissions.ts, validations, formatters)
+  [ ] Playwright E2E (all critical flows)
+  [ ] Performance audit (Lighthouse)
+  [ ] Dependency audit (npm audit)
+  [ ] Production checklist (Section 19)
+  [ ] Staff training session
+  [ ] First real client onboarding (end-to-end)
+  [ ] Go live
+
+================================================================================
+  OPEN QUESTIONS / ITEMS TO DECIDE
+================================================================================
+
+  1. CREDENTIAL DELIVERY: What is the agreed secure channel for delivering
+     ClientID, Passphrase, and TOTP enrollment link to new clients?
+     Recommended: in-person, printed credential sheet.
+
+  2. TRANSFER THRESHOLD: What is the counter-approval threshold (CHF amount
+     above which Major Admin must counter-approve)? Suggested: CHF 500,000.
+
+  3. HISTORICAL PRICES FOR SECURITIES: No free reliable API exists for
+     historical stock prices. Will admin enter these manually, or do you
+     want to integrate a paid API (e.g., Alpha Vantage, $50/month)?
+
+  4. ADMIN EMAIL DOMAIN: What email domain will admin notification emails
+     come from? Suggest: noreply@zpfinanz.ch (requires DNS setup for Resend).
+
+  5. REALISED GAINS TRACKING: Should realised gains (from sold positions)
+     be tracked separately and shown on the performance page? Important for
+     client tax reporting.
+
+  6. PHONE NUMBER UPDATES: Should clients be able to self-propose a new
+     phone number (pending admin approval), or is this fully admin-managed?
+
+  7. MULTI-CURRENCY PORTFOLIO DISPLAY: When client changes preferred
+     currency from CHF to USD, should all values be live-converted at
+     current FX rates, or shown with a "converted at [date] rate" note?
+
+================================================================================
+  END OF DOCUMENT
+  ZPF Private Client Portal — Production Specification v2.0
+  Zürichberg Privat Finanz AG — Strictly Confidential
+================================================================================

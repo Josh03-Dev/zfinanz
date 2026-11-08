@@ -1,0 +1,710 @@
+================================================================================
+  ZÜRICHBERG PRIVAT FINANZ AG — SUPER ADMIN PANEL
+  STRUCTURE SPECIFICATION
+  Prepared for: Internal Engineering Reference
+  Version: 1.0 | Date: April 2026
+================================================================================
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Super Admin panel is the top-level control surface for the entire ZPF
+system. Only one Super Admin account exists in production, created via a
+seed script at initial deployment. No UI can create or delete this account.
+
+Super Admin has unrestricted access to every client, every admin, every
+transaction, every message, and every audit log in the system — with no
+scoping filters applied.
+
+Route prefix: /admin (shared with other roles)
+Auth: same 3-step login at /admin/login (ClientID + Passphrase + TOTP)
+Role check: role === SUPER_ADMIN
+
+Super Admin sees an expanded version of the admin panel with additional
+nav items and zero data restrictions. Where a standard Admin would see
+only their clients, Super Admin sees everyone.
+
+================================================================================
+ROUTE MAP
+================================================================================
+
+  /admin/overview                         — Dashboard (full system view)
+  /admin/clients                          — All clients (no scope filter)
+  /admin/clients/new                      — Create new client
+  /admin/clients/[clientId]               — Client profile
+  /admin/clients/[clientId]/portfolio     — Client portfolio + asset management
+  /admin/clients/[clientId]/transactions  — Transaction history + add/edit
+  /admin/clients/[clientId]/documents     — Document vault (admin view)
+  /admin/clients/[clientId]/kyc           — KYC management
+  /admin/clients/[clientId]/transfers     — Client's transfer requests
+  /admin/clients/[clientId]/messages      — Client's message threads
+  /admin/clients/[clientId]/activity      — Full activity log for this client
+  /admin/transfers                        — All pending/active transfers (global)
+  /admin/messages                         — All message threads (global)
+  /admin/staff                            — All staff (Major Admins + Admins)
+  /admin/staff/new                        — Create new staff account
+  /admin/staff/[staffId]                  — Edit staff profile
+  /admin/audit                            — Full system audit log
+  /admin/config                           — System configuration (Super Admin only)
+
+================================================================================
+SIDEBAR NAVIGATION (Super Admin view)
+================================================================================
+
+  Top section:
+  ─────────────
+  Overview          /admin/overview
+  Clients           /admin/clients
+  Transfers         /admin/transfers       [badge: pending count]
+  Messages          /admin/messages        [badge: unread count]
+
+  Management section:
+  ───────────────────
+  Staff             /admin/staff
+  Audit Log         /admin/audit
+
+  System section (Super Admin only):
+  ────────────────────────────────────
+  System Config     /admin/config
+
+  Bottom:
+  ────────
+  [ZPF Logo / Wordmark]
+  Admin display name + role badge (SUPER ADMIN)
+  Logout
+
+================================================================================
+1. OVERVIEW DASHBOARD (/admin/overview)
+================================================================================
+
+The Super Admin overview shows the full system at a glance — all clients,
+all admins, all activity. No filters applied. Every number is system-wide.
+
+────────────────────────────────────────────────────────────────────────────────
+TOP STATS STRIP (6 cards)
+────────────────────────────────────────────────────────────────────────────────
+
+  Card 1: Total AUM
+    Value:      Sum of all Portfolio.totalValueChf across every client
+    Sub:        "Across [N] active client accounts"
+    Trend:      +/- % vs. last quarter (from PortfolioSnapshot comparison)
+    Color:      Gold accent
+
+  Card 2: Total Clients
+    Value:      Count of all ClientProfiles
+    Sub:        "[N] fully active · [N] locked · [N] pending TOTP enrollment"
+    Click:      → /admin/clients
+
+  Card 3: Pending Transfers
+    Value:      Count of TransferRequests with status in [PENDING_REVIEW,
+                UNDER_REVIEW, AWAITING_COUNTER]
+    Sub:        "[N] awaiting counter-approval" (if any AWAITING_COUNTER)
+    Color:      Amber if count > 0
+    Click:      → /admin/transfers?tab=pending
+
+  Card 4: Unread Messages
+    Value:      Count of unread MessageThreads across all admins' clients
+    Sub:        "Across [N] open threads"
+    Color:      Amber if count > 0
+    Click:      → /admin/messages?filter=unread
+
+  Card 5: Staff
+    Value:      Total active staff count
+    Sub:        "[N] Major Admins · [N] Admins"
+    Click:      → /admin/staff
+
+  Card 6: System Health
+    Indicators: DB (green/red) · Redis (green/red) · S3 (green/red)
+    Sub:        "All systems operational" or first failing service name
+    Note:       Calls lightweight health-check endpoints on render
+
+────────────────────────────────────────────────────────────────────────────────
+AUM TREND CHART
+────────────────────────────────────────────────────────────────────────────────
+
+  Type:       recharts LineChart
+  Data:       Monthly total AUM from PortfolioSnapshot records, last 12 months
+              Aggregate across all clients (sum per snapshot date)
+  X-axis:     Month labels (Apr, May, Jun … Mar)
+  Y-axis:     CHF values (formatted with K/M suffix)
+  Tooltip:    "CHF [value] · [month] [year]"
+  No time selector on this view — always last 12 months
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN PERFORMANCE TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Lists all active Major Admins and their direct stats:
+
+  Columns:
+    Name        — StaffProfile.displayName
+    Role        — MAJOR_ADMIN badge
+    Admins      — count of active Admins under this Major Admin
+    Clients     — count of all clients across their admin tree
+    AUM         — sum of portfolio values across their tree (CHF)
+    Pending     — count of pending transfers in their tree
+    Last Active — lastLoginAt of this Major Admin
+    Actions     — [View Activity] → /admin/audit?adminId=[id]
+
+  Below, collapsed accordion or separate table for standard Admins:
+    Same columns but scoped to each Admin's own clients.
+
+────────────────────────────────────────────────────────────────────────────────
+RECENT SYSTEM ACTIVITY FEED
+────────────────────────────────────────────────────────────────────────────────
+
+  Last 20 AuditLog entries across the entire system.
+  Columns: Timestamp · Admin · Action · Client (if applicable) · Details
+  Actions shown in plain language:
+    "Dr. Steiner approved transfer of CHF 142,000 for Adebayo S."
+    "New client account created: ZPF-8812-0041 (Keiko T.)"
+    "TOTP reset issued for ZPF-7741-0038"
+  Link: [View Full Audit Log] → /admin/audit
+
+================================================================================
+2. CLIENT MANAGEMENT (/admin/clients)
+================================================================================
+
+Super Admin sees all clients in the system with no ownership filter.
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT LIST TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Powered by TanStack Table v9 with server-side pagination and sorting.
+
+  Search:     Full-text search across ClientID, full name, display name
+  Filters:    KYC Status · Risk Profile · Mandate Type · Account Status
+              Assigned Admin (dropdown of all admins)
+  Sort:       By: Name · AUM · Last Login · Onboard Date
+
+  Columns:
+    ClientID          — ZPF-XXXX-XXXX, monospace, copyable
+    Name              — displayName (full name on hover tooltip)
+    Assigned Admin    — ownerAdmin.displayName [link to admin's staff profile]
+    AUM               — Portfolio.totalValueChf (CHF, formatted)
+    KYC               — badge: VERIFIED (green) / PENDING (amber) / EXPIRED (red)
+    Account Status    — ACTIVE (green) / LOCKED (red)
+    Last Login        — relative time ("2 days ago") with full date on hover
+    Actions           — [View] [Edit] [Lock/Unlock]
+
+  Top-right button:   [+ Create Client] → /admin/clients/new
+
+  Super Admin exclusive:
+    - Column "Assigned Admin" is visible and filterable (standard Admin does not
+      see this column — they only see their own clients)
+    - "Reassign Client" action available on each row (opens modal — see below)
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT REASSIGNMENT (Super Admin exclusive)
+────────────────────────────────────────────────────────────────────────────────
+
+  Trigger: [Reassign] button on client row (or within client profile page)
+
+  Modal — "Reassign Client":
+    Current Admin:    [read-only display]
+    New Admin:        [searchable dropdown of all active Admins]
+    Reason:           [textarea, required — stored in AuditLog]
+    Warning text:     "This will transfer ownership and notify the new admin.
+                       The client's data is not affected."
+    Confirm button:   "Reassign Client"
+
+  On confirm:
+    → PATCH /api/admin/clients/[clientId] { ownerAdminId: newAdminId }
+    → AuditLog entry: CLIENT_REASSIGNED
+    → Notification to new admin: "Client [name] has been assigned to you"
+    → Old admin notified: "Client [name] has been reassigned"
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT PROFILE (/admin/clients/[clientId])
+────────────────────────────────────────────────────────────────────────────────
+
+  Same layout as standard Admin view, but Super Admin sees additional fields:
+
+  Identity Panel:
+    Full name, display name, initials
+    Date of birth, nationality, domicile
+    Phone number
+    ClientID (read-only — never changes)
+    Onboarded date
+
+  Account Panel:
+    KYC Status + verified date + expiry date     [Edit button]
+    Risk Profile                                 [Edit button]
+    Mandate Type + revised date                  [Edit button]
+    Account Status (Active / Locked)             [Lock / Unlock button]
+    Must Change Passphrase flag                  [Reset button]
+
+  Assigned Admin Panel:                          ← Super Admin exclusive
+    Current ownerAdmin displayName, title
+    parentMajorAdmin displayName
+    [Reassign Client] button
+
+  RM Display Panel:
+    Shows rmDisplayName, rmDisplayTitle, etc.    [Edit button]
+
+  Quick Stats:
+    Portfolio total value
+    Last login (IP + city)
+    TOTP status (Enrolled / Not Enrolled)
+    Failed TOTP attempts (with [Reset Counter] button)
+    Open message threads count
+    Pending transfers count
+
+  Sub-navigation tabs (same as all admin roles):
+    Portfolio | Transactions | Documents | KYC | Transfers | Messages | Activity
+
+================================================================================
+3. STAFF MANAGEMENT (/admin/staff)
+================================================================================
+
+Super Admin is the only role that can create Major Admin accounts.
+Super Admin can also edit any staff member regardless of hierarchy.
+
+────────────────────────────────────────────────────────────────────────────────
+STAFF LIST TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Sections: Two tables, or one filterable table with role filter.
+
+  SECTION A — Major Admins
+  ─────────────────────────
+  Columns:
+    Name          — StaffProfile.displayName + title below
+    Role          — MAJOR ADMIN badge (gold)
+    Admins        — count of active Admins reporting to them
+    Clients       — total client count across their tree
+    AUM           — CHF total across their tree
+    Last Login    — relative time
+    Status        — Active / Inactive badge
+    Actions       — [View] [Edit] [Deactivate]
+
+  SECTION B — Admins (Standard)
+  ──────────────────────────────
+  Columns:
+    Name          — StaffProfile.displayName + title below
+    Role          — ADMIN badge (mist/grey)
+    Reports To    — parentMajorAdmin displayName
+    Clients       — count of their own clients
+    AUM           — CHF total for their clients
+    Last Login    — relative time
+    Status        — Active / Inactive badge
+    Actions       — [View] [Edit] [Deactivate] [Change Parent]
+
+  Top-right: [+ Create Staff Account] → /admin/staff/new
+
+────────────────────────────────────────────────────────────────────────────────
+CREATE STAFF ACCOUNT (/admin/staff/new)
+────────────────────────────────────────────────────────────────────────────────
+
+  Multi-step form (Super Admin only for Major Admin creation):
+
+  STEP 1 — Identity
+    Full name (required)
+    Display name (pre-filled from full name, editable)
+    Initials (auto-generated, editable)
+    Title (e.g., "Managing Director", "Senior Relationship Manager")
+    Department (optional)
+
+  STEP 2 — Role & Hierarchy
+    Role:
+      ○ Major Admin     (Super Admin can create either)
+      ○ Admin
+    Parent Major Admin: [dropdown — required if role = Admin]
+      (if role = Major Admin: this field is hidden — owned by Super Admin)
+    Notification Email: [email input, optional]
+    Email notification toggles:
+      □ Notify on new client message
+      □ Notify on transfer request
+      □ Notify on client login (unusual activity)
+
+  STEP 3 — Credentials Preview
+    System generates and displays:
+      Staff ClientID: ZPF-XXXX-XXXX (auto-generated)
+      Initial Passphrase: [24-char random] (shown ONCE)
+      TOTP Enrollment URL: auth.zpfinanz.ch/enroll?token=xxxxx (72hr expiry)
+    "Download Credential Sheet" button (one-time PDF, never stored)
+    "I have securely noted these credentials" checkbox (required)
+
+  STEP 4 — Confirm
+    Summary of all entries
+    "Create Staff Account" submit
+
+  After creation:
+    → User record created (role = MAJOR_ADMIN or ADMIN)
+    → StaffProfile created
+    → TotpEnrollmentToken created
+    → AuditLog: STAFF_CREATED
+
+────────────────────────────────────────────────────────────────────────────────
+EDIT STAFF PROFILE (/admin/staff/[staffId])
+────────────────────────────────────────────────────────────────────────────────
+
+  Sections:
+
+  Profile Info:
+    Display name, title, department, initials     [Editable]
+
+  Role & Hierarchy:                               ← Super Admin exclusive
+    Current role badge
+    [Change Role] button → confirmation modal
+      "Changing this staff member's role will affect what they can access.
+       All existing client assignments are preserved."
+      Confirm to proceed.
+    [Change Parent Admin] button (for ADMIN role)
+      → Dropdown of all active Major Admins
+      → AuditLog: STAFF_PARENT_CHANGED
+
+  Notification Settings:
+    Notification email [input + verify button]
+    Toggle: email on message / transfer / login
+
+  Security:
+    TOTP status: Enrolled / Not Enrolled
+    [Generate New Enrollment Link] → creates TotpEnrollmentToken,
+      shows new enrollment URL + download option
+    Last login info (IP, city, timestamp)
+    Failed TOTP attempts counter [Reset button]
+
+  Account Status:
+    Active / Inactive toggle
+    [Deactivate Account] → confirmation modal, requires reason
+      → isLocked = true, all sessions revoked
+      → AuditLog: STAFF_DEACTIVATED
+    Note: deactivation is soft — record and audit trail preserved
+
+================================================================================
+4. TRANSFERS (/admin/transfers)
+================================================================================
+
+Super Admin sees all transfers in the system, across every admin and client.
+Same interface as standard Admin, but with no scope filter applied.
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSFER LIST
+────────────────────────────────────────────────────────────────────────────────
+
+  Tabs: Pending (default) / Under Review / Awaiting Counter / Approved
+        Executed / Rejected / All
+
+  "Awaiting Counter" tab — Super Admin exclusive:
+    Transfers in AWAITING_COUNTER status that need counter-approval.
+    This is the primary action item for large transfer review.
+    Badge shows count if any exist.
+
+  Each transfer card shows:
+    Client name + ClientID
+    Assigned Admin (who manages this client)
+    Amount: [currency] [amount] (≈ CHF [chf_amount])
+    Beneficiary: full name | country | masked IBAN
+    Bank: bank name | BIC
+    Reference: payment reference
+    Category: label
+    Client notes (if any)
+    Submitted: date/time
+    Attachments: downloadable list
+
+  Action buttons (Super Admin has all):
+    [Begin Review] → status: UNDER_REVIEW
+    [Approve]      → if below threshold: APPROVED
+                     if above threshold: AWAITING_COUNTER (or Super Admin approves directly)
+    [Counter-Approve] → available if status = AWAITING_COUNTER (Super Admin or Major Admin)
+    [Reject]       → requires rejection reason text
+    [Mark Executed] → enter settlement reference, status → EXECUTED
+    [View Client]  → /admin/clients/[clientId]
+
+  Super Admin can approve any transfer at any tier —
+  no threshold restriction applies to Super Admin.
+
+================================================================================
+5. MESSAGES (/admin/messages)
+================================================================================
+
+Super Admin sees all message threads across all clients and admins.
+
+────────────────────────────────────────────────────────────────────────────────
+MESSAGE INBOX
+────────────────────────────────────────────────────────────────────────────────
+
+  Layout: Split panel (same as client portal and standard admin)
+    Left panel: Thread list
+    Right panel: Active thread
+
+  Thread List:
+    Filter: All / Unread / Open / Resolved
+    Filter by Admin (dropdown — Super Admin exclusive)
+    Filter by Client (search)
+
+    Each row:
+      Client display name + ClientID
+      Assigned Admin name
+      Thread subject
+      Last message preview
+      Timestamp
+      Unread dot (blue) if unread
+      Priority badge (if escalated)
+
+  Thread View (right panel):
+    Full message history (client messages right-aligned, admin left-aligned)
+    Internal notes shown with distinct styling (staff-only indicator)
+
+    Admin compose area:
+      Rich text editor (Tiptap): bold, italic, lists, links
+      "Internal note" toggle (visible to all staff, hidden from client)
+      File attachment (up to 3 files)
+
+    Thread actions:
+      [Resolve Thread] · [Archive] · [Change Priority] · [Reassign to Admin]
+
+    [Reassign to Admin] — Super Admin exclusive:
+      Dropdown of all active Admins
+      Moves thread assignedAdminId to new admin
+      AuditLog: THREAD_REASSIGNED
+
+================================================================================
+6. AUDIT LOG (/admin/audit)
+================================================================================
+
+Super Admin sees the full, unfiltered audit log for the entire system.
+The audit log is read-only and non-deletable.
+
+────────────────────────────────────────────────────────────────────────────────
+AUDIT LOG TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Filters:
+    Date range picker (from / to)
+    Admin (searchable dropdown — all staff)
+    Client (searchable — all clients)
+    Action type (multi-select: see full action list below)
+    IP address (text search)
+
+  Columns:
+    Timestamp     — date/time (formatted, user timezone)
+    Admin         — displayName + role badge
+    Action        — plain-language label (see action list)
+    Client        — displayName + ClientID (if applicable)
+    Entity        — entity type + ID (e.g., "Transfer TRF-00412")
+    IP Address    — admin's IP at time of action
+    Notes         — metadata summary (e.g., "Amount: CHF 142,000 → APPROVED")
+
+  Pagination: server-side, 50 rows per page
+  Sort: default by Timestamp DESC
+  Export: [Export to CSV] button — exports current filter result
+
+  Logged actions (full list):
+    CLIENT_CREATED
+    CLIENT_LOCKED / CLIENT_UNLOCKED
+    CLIENT_REASSIGNED                ← Super Admin only
+    KYC_STATUS_CHANGED
+    RISK_PROFILE_CHANGED
+    TRANSACTION_ADDED
+    TRANSACTION_EDITED
+    TRANSACTION_DELETED
+    TRANSFER_APPROVED
+    TRANSFER_COUNTER_APPROVED        ← Major Admin + Super Admin
+    TRANSFER_REJECTED
+    TRANSFER_EXECUTED
+    TRANSFER_CANCELLED
+    DOCUMENT_UPLOADED
+    DOCUMENT_SEALED / DOCUMENT_UNSEALED
+    DOCUMENT_DELETED
+    MESSAGE_SENT
+    THREAD_RESOLVED
+    THREAD_REASSIGNED                ← Super Admin only
+    BENEFICIARY_VERIFIED
+    STATEMENT_GENERATED
+    TOTP_ENROLLMENT_GENERATED
+    STAFF_CREATED
+    STAFF_EDITED
+    STAFF_DEACTIVATED
+    STAFF_PARENT_CHANGED             ← Super Admin only
+    STAFF_ROLE_CHANGED               ← Super Admin only
+    SYSTEM_CONFIG_CHANGED            ← Super Admin only
+    LOGIN_SUCCESS / LOGIN_FAILED / LOGOUT
+
+  [SUGGESTION]: Anomaly flags — visually highlighted rows for:
+    - 5+ failed logins in 10 minutes for the same account
+    - Transfer approved in under 2 minutes (very fast review)
+    - Same admin making 10+ transactions in 5 minutes
+    - SYSTEM_CONFIG_CHANGED entry (always flag these visually)
+
+================================================================================
+7. SYSTEM CONFIGURATION (/admin/config)
+================================================================================
+
+Super Admin only. No other role can access this page.
+Changes to config are logged as SYSTEM_CONFIG_CHANGED in AuditLog.
+
+────────────────────────────────────────────────────────────────────────────────
+SECTIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  SECTION 1 — Transfer Rules
+  ───────────────────────────
+    Counter-approval threshold:   CHF [number input] (default: 500,000)
+      Sub: "Transfers above this amount require Major Admin counter-approval"
+
+  SECTION 2 — Security Settings
+  ──────────────────────────────
+    Session idle timeout (hours):          [number input, default: 8]
+    Session absolute timeout (hours):      [number input, default: 24]
+    TOTP enrollment link expiry (hours):   [number input, default: 72]
+    Max failed TOTP attempts before lock:  [number input, default: 10]
+
+  SECTION 3 — Document Settings
+  ──────────────────────────────
+    Max document upload size (MB):         [number input, default: 50]
+    Allowed file types:                    [tag input, default: PDF, DOCX, XLSX,
+                                            PNG, JPG, HEIC]
+
+  SECTION 4 — Live Price Feeds
+  ─────────────────────────────
+    FX rates source:
+      ○ Frankfurter API (automatic)
+      ○ Manual (disable auto-updates)
+    FX update interval (minutes):          [number input, default: 60]
+
+    Metals price source:
+      ○ metals-api.com (automatic)
+      ○ Manual (disable auto-updates)
+    Metals update interval (minutes):      [number input, default: 5]
+
+    Crypto price source:
+      ○ CoinGecko (automatic)
+      ○ Manual (disable auto-updates)
+    Crypto update interval (minutes):      [number input, default: 2]
+
+  SECTION 5 — Maintenance Mode
+  ─────────────────────────────
+    Maintenance Mode:    [toggle — ON/OFF]
+      When ON: banner shown to all clients on every page
+      Admins can still log in normally
+    Maintenance message: [textarea]
+      Default: "The portal is currently undergoing scheduled maintenance.
+                Please check back shortly."
+
+  SECTION 6 — Contact & Branding
+  ────────────────────────────────
+    Public contact email (shown on visitor page):  [email input]
+
+  Each section has its own [Save Changes] button.
+  A confirmation toast appears after save: "Configuration updated."
+  Every save triggers an AuditLog entry: SYSTEM_CONFIG_CHANGED
+    with a metadata diff showing old value → new value.
+
+================================================================================
+8. DATA ACCESS RULES (enforced in lib/permissions.ts)
+================================================================================
+
+  canAccessClient(SUPER_ADMIN, any clientId) → always true
+  canApproveTransfer(SUPER_ADMIN, any transfer) → always true (no threshold limit)
+  canManageStaff(SUPER_ADMIN, any user) → always true
+  canViewAuditLog(SUPER_ADMIN) → full system, no filter
+  canAccessConfig(SUPER_ADMIN) → true
+  canCreateMajorAdmin(SUPER_ADMIN) → true
+
+  The Super Admin account itself:
+    - Cannot be locked by any other user
+    - Cannot be deactivated via UI (no deactivate button on own profile)
+    - TOTP reset requires direct DB access (no in-panel self-reset for security)
+    - Cannot be deleted via UI
+
+================================================================================
+9. SUPER ADMIN PROFILE / SETTINGS
+================================================================================
+
+  Super Admin's own settings at /admin/settings (or profile section):
+    - Change passphrase (requires current passphrase + live TOTP)
+    - View active sessions + terminate individual sessions
+    - Add / update notification email
+    - Toggle email notifications for system events
+    - View own login history
+
+  No role/hierarchy fields shown (cannot edit own role — it's seeded).
+  No "Deactivate" button on own account.
+
+================================================================================
+10. COMPONENT & FILE STRUCTURE (admin panel)
+================================================================================
+
+  app/admin/
+  ├── login/page.tsx
+  ├── layout.tsx                       — admin shell: sidebar + topbar
+  ├── page.tsx                         — redirects → /admin/overview
+  ├── overview/page.tsx                — Section 1 (this doc)
+  ├── clients/
+  │   ├── page.tsx                     — Section 2: client list
+  │   ├── new/page.tsx                 — create client flow
+  │   └── [clientId]/
+  │       ├── page.tsx                 — client profile
+  │       ├── portfolio/page.tsx
+  │       ├── transactions/page.tsx
+  │       ├── documents/page.tsx
+  │       ├── kyc/page.tsx
+  │       ├── transfers/page.tsx
+  │       ├── messages/page.tsx
+  │       └── activity/page.tsx
+  ├── transfers/page.tsx               — Section 4: all transfers
+  ├── messages/page.tsx                — Section 5: all messages
+  ├── staff/
+  │   ├── page.tsx                     — Section 3: staff list
+  │   ├── new/page.tsx
+  │   └── [staffId]/page.tsx
+  ├── audit/page.tsx                   — Section 6: audit log
+  └── config/page.tsx                  — Section 7: system config (SA only)
+
+  components/admin/
+  ├── admin-sidebar.tsx                — role-aware: shows config link for SA
+  ├── admin-topbar.tsx
+  ├── client-table.tsx                 — TanStack Table, role-aware columns
+  ├── staff-table.tsx
+  ├── transfer-approval-card.tsx
+  ├── transaction-form.tsx
+  ├── audit-log-table.tsx
+  ├── system-config-form.tsx           — SA only
+  ├── reassign-client-modal.tsx        — SA only
+  └── stats-strip.tsx                  — overview dashboard stat cards
+
+================================================================================
+11. API ROUTES (admin panel — Super Admin additions)
+================================================================================
+
+  All admin routes in /api/admin/** require role check.
+  Super Admin-specific routes:
+
+  PATCH /api/admin/clients/[clientId]/reassign
+    Body: { newAdminId, reason }
+    Auth: SUPER_ADMIN only
+
+  POST  /api/admin/staff
+    Body: { role, fullName, ... }
+    Auth: SUPER_ADMIN (for MAJOR_ADMIN creation)
+          SUPER_ADMIN or MAJOR_ADMIN (for ADMIN creation)
+
+  PATCH /api/admin/staff/[id]/role
+    Body: { newRole }
+    Auth: SUPER_ADMIN only
+
+  PATCH /api/admin/staff/[id]/parent
+    Body: { newParentAdminId }
+    Auth: SUPER_ADMIN only
+
+  GET  /api/admin/config
+  PATCH /api/admin/config
+    Auth: SUPER_ADMIN only
+
+  GET  /api/admin/audit
+    Query: ?adminId=&clientId=&action=&from=&to=&page=&limit=
+    Auth: SUPER_ADMIN (unfiltered) / MAJOR_ADMIN (scoped to their tree)
+          ADMIN (own actions only)
+
+  GET  /api/admin/overview/stats
+    Returns: { totalAum, totalClients, pendingTransfers, unreadMessages,
+               activeStaff, systemHealth, aumTrend }
+    Auth: SUPER_ADMIN (all data) / MAJOR_ADMIN (scoped) / ADMIN (scoped)
+
+================================================================================
+END OF SUPER ADMIN PANEL SPECIFICATION
+================================================================================

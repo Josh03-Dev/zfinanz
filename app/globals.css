@@ -1,26 +1,45 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --navy:  #08162A;
+  --navy2: #0e2040;
+  --navy3: #162d56;
+  --gold:  #C4A44A;
+  --gold2: #dfc27a;
+  --gold3: #8a6f2e;
+  --cream: #F4EFE6;
+  --mist:  #8A9AB0;
+  --border:  rgba(196,164,74,0.15);
+  --border2: rgba(196,164,74,0.30);
+  --green: #1d9e75;
+  --red:   #c0392b;
+  --surf:  rgba(255,255,255,0.04);
+  --surf2: rgba(255,255,255,0.07);
+  --radius:    6px;
+  --radius-lg: 12px;
+  --safe-top:    env(safe-area-inset-top,    0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-cormorant), Georgia, serif;
+  --font-sans:    var(--font-dm-sans),   system-ui, sans-serif;
+  --font-mono:    var(--font-dm-mono),   monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+html, body {
+  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  background: var(--navy);
+  color: var(--cream);
+  overflow-x: hidden;
+  height: 100%;
 }
+
+button { cursor: pointer; border: none; background: none; font-family: inherit; }
+input  { font-family: inherit; }
+a      { text-decoration: none; color: inherit; }

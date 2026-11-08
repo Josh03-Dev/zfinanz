@@ -1,0 +1,922 @@
+================================================================================
+  ZPF — DASHBOARD PORTFOLIO PAGE
+  Functional Specification & Section Breakdown
+  File: /app/dashboard/portfolio/page.tsx
+  Route: /dashboard/portfolio
+  Last updated: 2026-04-03
+================================================================================
+
+This is the landing page every client sees after login. It is the single most
+important page in the entire portal. Its job is to give the client an immediate,
+accurate snapshot of their complete wealth picture — across every asset class,
+vault location, and currency — without requiring any navigation.
+
+It is read-only for the client. Every number, document, and data point shown
+here was entered by an admin (Relationship Manager or Operations staff). The
+client cannot edit anything on this page.
+
+────────────────────────────────────────────────────────────────────────────────
+PAGE-LEVEL DATA REQUIREMENTS (what must exist before this page is meaningful)
+────────────────────────────────────────────────────────────────────────────────
+
+For the portfolio page to render real data, the following must exist in the
+database for this client (all created by the RM Admin):
+
+  • Client account (identity, KYC status, risk profile, mandate type)
+  • Portfolio record (total value, cost basis, onboarding date)
+  • At least one asset class record (monetary, securities, metals, digital,
+    real estate, or vault)
+  • An assigned Relationship Manager (RM) with contact details
+  • At least one activity/transaction record
+  • At least one vault document (or the vault card shows 0 docs)
+
+If the RM has not yet built the portfolio, the page should show an empty state
+per section, not errors. A banner should tell the client their portfolio is
+being set up and to contact their RM.
+
+================================================================================
+  SECTION 1: RM MESSAGE BANNER
+================================================================================
+
+WHAT IT IS:
+  A clickable notification strip pinned at the very top of the page. It appears
+  whenever the client has unread messages from their Relationship Manager.
+
+WHAT IT SHOWS:
+  • A gold message icon on the left
+  • Subject line of the most recent unread message (first 80 chars, truncated)
+  • A gold pill badge showing the unread count ("2 unread")
+  • A right chevron indicating it is tappable/clickable
+
+BEHAVIOUR (how it should work — currently static):
+  • Clicking this banner navigates the client to /dashboard/messages
+  • The banner only appears if unreadCount > 0
+  • If there are no unread messages, this entire banner is hidden (display: none)
+  • The unread count is live — it updates in real time via polling or websocket
+  • The subject line shown is from the most recent unread thread
+
+DATA SOURCE:
+  • API: GET /api/messages?clientId={id}&unread=true
+  • Returns: { count: number, latestSubject: string, latestThreadId: string }
+
+ADMIN CONTEXT:
+  • Only the RM assigned to this client can send messages that appear here
+  • Other departments (Compliance, Operations, Custody) can also send messages
+    — they each appear with a department label in the messages page, but ALL
+    of them count toward the unread badge on this banner
+  • The RM admin interface shows which clients have not read their messages
+  • If the RM reassigns the client to another RM, message history stays intact
+    and the new RM sees all prior threads
+
+================================================================================
+  SECTION 2: PORTFOLIO SUMMARY — HERO CARDS
+================================================================================
+
+This is the most visually prominent section of the page. It is a 3-column grid
+of cards that give the client their top-level financial picture at a glance.
+
+────────────────────────────────────────────────────────────────────────────────
+  2A. MAIN VALUE CARD (spans 2 columns)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  The dominant card. Shows the client's total portfolio value in CHF as a large
+  typographic number, with a trend line below it.
+
+WHAT IT SHOWS:
+  • Label: "Total Portfolio Value · as of today"
+  • The total CHF value (e.g., CHF 12,847,340)
+  • A green trend line: +CHF amount (+percent%) since [label]
+    (e.g., "+CHF 284,120 (+2.26%) since last quarter")
+  • A subline summarising scope: "Across 6 asset classes · 4 currencies ·
+    2 vaulted locations"
+  • A faint watermark "ZPF" text in the background (decorative)
+
+HOW THE NUMBER IS CALCULATED:
+  Total Portfolio Value = sum of the CHF-equivalent current market values of
+  all active asset class positions for this client:
+    = Monetary Holdings (all accounts converted to CHF at live FX)
+    + Securities Portfolio (equities at live price × shares held, bonds at
+      current market value)
+    + Precious Metals (troy oz held × live spot price per oz in CHF)
+    + Digital Assets (crypto quantity × live spot price in CHF)
+    + Real Estate Holdings (last confirmed independent valuation in CHF)
+
+  Note: Document Vault has no monetary value — it is excluded from total.
+  Note: Real estate uses the LAST CONFIRMED VALUATION, not a live price, since
+  property values are not real-time. The RM updates valuations manually after
+  each independent assessment.
+
+HOW THE CHANGE IS CALCULATED:
+  • "Since last quarter" compares today's total value to the total value
+    recorded at the end of the previous calendar quarter (snapshotted by
+    the system at quarter close)
+  • Change amount = currentTotal − lastQuarterTotal (in CHF)
+  • Change percent = (change / lastQuarterTotal) × 100
+
+DATA SOURCE:
+  • mockPortfolio.totalValue → from DB: portfolios.totalValueCHF
+  • mockPortfolio.change → from DB: portfolios.lastQuarterValueCHF
+  • mockPortfolio.subline → derived from count of active asset class types
+    + count of distinct currencies + count of vault locations
+
+ACTION BUTTON: "Download Report"
+  • Downloads a PDF summary report of this portfolio snapshot
+  • Backend: POST /api/reports/portfolio?clientId={id}&format=pdf
+  • Triggers a server-side PDF generation (react-pdf) with current data
+  • Response: binary PDF stream, filename: ZPF_{clientId}_Portfolio_{date}.pdf
+  • The client can always download this — it is not admin-gated
+
+ADMIN CONTEXT:
+  • The RM controls the total value by entering and maintaining all asset data
+  • The RM can trigger a manual valuation update for any asset class at any time
+  • Super Admin and Major Admin see this same card on the client detail page at
+    /admin/clients/{id}/portfolio — it is always identical to what the client sees
+  • The "since last quarter" snapshot is taken automatically by the system at
+    23:59:59 on the last day of each quarter (automated cron job)
+  • If the RM updates historical data retroactively, the quarter snapshot is NOT
+    recalculated — only future snapshots reflect corrections
+
+────────────────────────────────────────────────────────────────────────────────
+  2B. UNREALISED GAIN CARD (top right)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A mini card showing the client's unrealised profit across the entire portfolio
+  — the difference between what they paid (cost basis) and what it is worth now.
+
+WHAT IT SHOWS:
+  • Label: "Unrealised Gain (YTD)"
+  • Gain percentage (e.g., +8.4%) in green
+  • Gain in CHF (e.g., "CHF 994,416 above cost basis")
+  • A small progress bar showing the gain as a visual proportion (fixed at 68%
+    width in mock — should be dynamic: unrealisedPct capped at 100%)
+
+HOW IT IS CALCULATED:
+  • Total Cost Basis = sum of all acquisition costs in CHF across every asset
+    the client currently holds (entered by RM when adding each position)
+  • Current Market Value = current total portfolio value (from 2A above)
+  • Unrealised Gain CHF = Current Market Value − Total Cost Basis
+  • Unrealised Gain % = (Gain CHF / Total Cost Basis) × 100
+  • YTD variant: compares current value to cost basis of positions held since
+    Jan 1 of current year only (for positions acquired this year, cost basis is
+    the acquisition price; for older positions, it's the Jan 1 value)
+
+IMPORTANT — "Unrealised" means:
+  These gains have not been locked in. The client has not sold the assets. The
+  number will go up and down as market prices move. Realised gains (from sold
+  positions) are shown on the Performance page, not here.
+
+DATA SOURCE:
+  • mockPortfolio.unrealisedGain → from DB: computed from all positions
+  • portfolioPositions.costBasisCHF + live market prices
+
+ADMIN CONTEXT:
+  • The RM must enter the cost basis correctly when adding each asset position
+  • If the cost basis is wrong, every gain/loss figure across the entire portal
+    will be wrong — this is one of the most critical data entry points
+  • The RM can correct historical cost basis entries (with audit log trail)
+
+────────────────────────────────────────────────────────────────────────────────
+  2C. NEXT SCHEDULED REVIEW CARD (middle right, hidden on tablet)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A mini card showing when the client's next formal portfolio review meeting is
+  scheduled with their RM. Hidden on screens ≤1024px.
+
+WHAT IT SHOWS:
+  • Label: "Next Scheduled Review"
+  • Date (e.g., "14 Mar")
+  • Description (e.g., "Annual RM portfolio review · Zürich")
+  • A progress bar showing how far along the review cycle is
+    (e.g., 82% = 82% of the way through the annual cycle until the next review)
+
+HOW THE PROGRESS BAR WORKS:
+  • If the review frequency is Annual (12 months), the bar fills 1/12th
+    per month elapsed since the last review
+  • Example: last review was Jan 1, next review is Jan 1 next year, today is
+    Oct 21 → progress = (10.7 months / 12 months) × 100 ≈ 89%
+  • The bar is gold, not green, because it is a countdown, not a performance
+    metric — it should turn red when within 14 days of the review date
+
+DATA SOURCE:
+  • mockPortfolio.nextReview → from DB: clientReviews table (adminId, clientId,
+    scheduledAt, completedAt, location, notes)
+  • Progress bar: computed from (today − lastReviewDate) / (nextReview − lastReviewDate)
+
+ADMIN CONTEXT:
+  • The RM creates and manages review appointments in the admin panel
+  • After a review is marked complete, the RM schedules the next one
+  • Super Admin and Major Admin can see all scheduled reviews across all clients
+    in the admin overview — used for capacity planning and workload management
+
+────────────────────────────────────────────────────────────────────────────────
+  2D. STATS STRIP (full width, below the three cards)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A single row of 3 quick-reference facts about the client's account. These do
+  not change frequently — they are structural metadata, not live values.
+
+WHAT IT SHOWS:
+  3 cells side by side, separated by vertical dividers:
+
+  Cell 1: CUSTODIAN
+    • Value: "ZPF AG — Primary Custody"
+    • Sub: "Bahnhofstrasse 72, 8001 Zürich"
+    → This tells the client where their assets are legally held in custody.
+    → Most clients use ZPF AG as primary custodian. Occasionally a sub-custodian
+      is used for specific asset classes (e.g., a specialist crypto custodian).
+    → DATA: portfolios.custodianName + portfolios.custodianAddress
+
+  Cell 2: RISK PROFILE
+    • Value: "Balanced — Medium"
+    • Sub: "Advisory mandate · Revised Jan 2025"
+    → This is the formal risk classification assigned to the client's account
+      based on their risk tolerance questionnaire (done during onboarding KYC).
+    → Possible values: Conservative — Low / Balanced — Medium / Growth — High /
+      Aggressive — Very High
+    → "Advisory mandate" means the RM advises but the client makes final
+      decisions. Alternative: Discretionary (RM decides).
+    → DATA: clients.riskProfile, clients.mandateType, clients.mandateRevisedAt
+
+  Cell 3: ACCOUNT STATUS
+    • Value: "Fully Active" (shown in green with a checkmark icon)
+    • Sub: "Since 12 March 2022"
+    → Tells the client whether their account is in good standing.
+    → Possible statuses:
+        - Fully Active (green): all services available, KYC current
+        - Restricted (amber): some services limited (e.g., KYC near expiry,
+          pending compliance review, outstanding document requested)
+        - Suspended (red): all transactions blocked (compliance hold, AML flag,
+          or admin-imposed freeze)
+        - Dormant (grey): no activity in 12+ months, reduced access
+    → DATA: clients.accountStatus, clients.onboardedAt
+
+ADMIN CONTEXT:
+  • Risk Profile is set by the RM during onboarding and can only be changed by
+    the RM (with Major Admin approval for upgrades to Aggressive)
+  • Account Status is set by the RM or Major Admin — only Super Admin can suspend
+  • If status changes to Restricted or Suspended, the client sees a red banner
+    above this stats strip explaining what is restricted and what action to take
+
+================================================================================
+  SECTION 3: QUICK ACTIONS GRID
+================================================================================
+
+WHAT IT IS:
+  Four shortcut buttons that take the client to the most common actions they
+  need to perform. Displayed as a 4-column grid (2 columns on very small screens).
+
+WHAT IT SHOWS (4 buttons):
+  1. Submit Transfer Request → navigates to /dashboard/transfers (pre-opens the
+     new transfer form)
+  2. Lodge Document to Vault → navigates to /dashboard/vault (pre-opens the
+     document upload modal)
+  3. Download Statement → triggers statement generation for the current or most
+     recent period; same as "Download Report" but specifically for bank-style
+     account statements
+  4. Contact RM Securely → navigates to /dashboard/messages (pre-opens a new
+     message thread to the client's assigned RM)
+
+BEHAVIOUR (currently static buttons — should be functional):
+  Button 1 — Submit Transfer Request:
+    • Navigates to /dashboard/transfers with query param ?action=new
+    • The transfers page reads this param and auto-opens the new transfer modal
+    • Should check if transfers are enabled for this account first:
+      if (accountStatus === 'Suspended') show error toast and block navigation
+
+  Button 2 — Lodge Document to Vault:
+    • Navigates to /dashboard/vault with query param ?action=upload
+    • The vault page reads this param and auto-opens the file upload modal
+    • Clients can upload documents for RM review (e.g., updated passport)
+    • After upload, the document is flagged as "Pending Review" until the RM
+      classifies, stamps, and approves it
+
+  Button 3 — Download Statement:
+    • Triggers POST /api/statements/generate?clientId={id}&period=latest
+    • Returns a PDF binary stream — downloaded to client device immediately
+    • Shows a loading spinner on the button during generation
+    • On error (e.g., no transactions in period), shows toast: "No statement
+      available for this period. Contact your RM."
+
+  Button 4 — Contact RM Securely:
+    • Navigates to /dashboard/messages with query param ?action=new&to=rm
+    • All messages are internal — no email is sent to the RM from the client
+    • Messages are encrypted in transit and at rest
+    • RM receives a notification in their admin panel
+
+ADMIN CONTEXT:
+  • The RM can disable individual actions per client (e.g., disable transfers
+    while a compliance review is in progress)
+  • Each button is controlled by a per-client feature flag in the DB:
+    clients.featuresEnabled = { transfers: bool, vaultUpload: bool,
+    statements: bool, messaging: bool }
+  • If a button is disabled, it still renders but shows as greyed out with a
+    tooltip: "This action is currently restricted. Contact your RM."
+
+================================================================================
+  SECTION 4: ASSET CLASSES GRID
+================================================================================
+
+WHAT IT IS:
+  Six cards — one per major asset class — giving a summary of each category of
+  the client's wealth. Each card is clickable and navigates to that asset's
+  detail page.
+
+WHAT EACH CARD SHOWS:
+  • An asset icon with a color-coded background
+  • A tag label (e.g., "Monetary", "Securities", "Metals")
+  • Asset class name (e.g., "Monetary Holdings")
+  • The total CHF value of that asset class
+  • A subtitle with extra detail (e.g., "4 currencies · CHF, EUR, USD, GBP")
+  • A small trend line showing recent performance direction and label
+
+THE 6 CARDS:
+
+  1. MONETARY HOLDINGS (blue)
+     • Value: sum of all cash account balances converted to CHF
+     • Sub: "4 currencies · CHF, EUR, USD, GBP"
+     • Trend: interest accrued this quarter as a percentage
+     • Navigates to: /dashboard/monetary
+     • Data: mockAssets[0] → DB: monetaryAccounts grouped by clientId
+
+  2. SECURITIES PORTFOLIO (green)
+     • Value: sum of all equity and bond positions at current market price in CHF
+     • Sub: total count of positions (e.g., "24 positions · Equities & Bonds")
+     • Trend: 12-month total return percentage across the securities portfolio
+     • Navigates to: /dashboard/securities
+     • Data: mockAssets[1] → DB: equityPositions + bondPositions by clientId
+
+  3. PRECIOUS METALS (gold)
+     • Value: total value of all gold, silver, platinum holdings in CHF
+     • Sub: metal types and vault location
+     • Trend: gold spot price YTD change percentage
+     • Navigates to: /dashboard/metals
+     • Data: mockAssets[2] → DB: metalHoldings by clientId × live spot prices
+
+  4. DIGITAL ASSETS (purple)
+     • Value: BTC + ETH holdings in CHF at current spot
+     • Sub: "BTC, ETH · Institutional cold storage"
+     • Trend: 30-day price movement (often negative, shown in red)
+     • Navigates to: /dashboard/digital
+     • Data: mockAssets[3] → DB: digitalAssetHoldings by clientId × live prices
+
+  5. REAL ESTATE HOLDINGS (orange)
+     • Value: sum of last confirmed independent valuations in CHF
+     • Sub: count of title documents in ZPF custody
+     • Trend: valuation status (live price not available — uses last assessment
+       date; shows "Valuation pending" if assessment is overdue)
+     • Navigates to: /dashboard/real-estate
+     • Data: mockAssets[4] → DB: realEstateProperties by clientId
+
+  6. DOCUMENT VAULT (grey)
+     • No monetary value (shows document count, not CHF)
+     • Sub: "Physical + digital archive · Zürich"
+     • Trend shows date of last document lodgement
+     • Navigates to: /dashboard/vault
+     • Data: mockAssets[5] → DB: vaultDocuments.count() by clientId
+
+FILTERING (currently static):
+  • The "Filter" button in the section header should open a dropdown:
+      - Show all (default)
+      - Hide empty / zero-value classes
+      - Sort by value: high to low / low to high
+      - Sort by return: best to worst
+
+ADMIN CONTEXT:
+  • Each asset class card only appears if the RM has created at least one record
+    in that category for the client
+  • If the RM has not entered any metals data, the Precious Metals card either
+    shows CHF 0 or is hidden entirely (controlled by admin config)
+  • The RM admin panel shows all 6 cards with the same data — allowing the RM
+    to see exactly what the client sees before the client logs in
+
+================================================================================
+  SECTION 5: PRECIOUS METALS — VAULT BREAKDOWN
+================================================================================
+
+WHAT IT IS:
+  Three smaller cards — one per metal — that break down the Precious Metals
+  asset class into its individual components (Gold, Silver, Platinum). This
+  section is only on the portfolio overview page to give extra prominence to
+  physical holdings because physical asset custody is a key trust signal for
+  private banking clients.
+
+WHAT EACH CARD SHOWS:
+  • Metal name and symbol (e.g., "Gold (XAU)")
+  • Weight held (e.g., "24.5") with unit ("troy oz")
+  • Approximate CHF value ("≈ CHF 1,482,210")
+  • Vault location with bar configuration (e.g., "ZPF Vault · Zürich HB ·
+    3 × 400oz bars")
+
+BEHAVIOUR:
+  • Clicking any metal card should navigate to /dashboard/metals with the
+    specific metal tab pre-selected (e.g., ?tab=gold)
+  • The "Vault Details" button in the header navigates to /dashboard/metals
+
+HOW VALUES ARE CALCULATED:
+  • Weight in troy oz comes from summing the weight of all individual bars
+    for that metal (entered by RM/Custody staff)
+  • CHF value = troy oz held × current live spot price per troy oz in CHF
+  • Spot prices are fetched from a market data provider (e.g., XE.com API,
+    or a metals-specific feed) — updated every 15 minutes during market hours
+  • The "≈" symbol is intentional — it signals this is an approximate real-time
+    value, not a locked/confirmed valuation
+
+DATA SOURCE:
+  • mockMetals → DB: metalHoldings where clientId = {id} grouped by metalType
+  • Live prices: external metals price API (XAU, XAG, XPT in CHF)
+
+ADMIN CONTEXT:
+  • Each bar is registered individually by the Custody & Vault department
+    (a sub-role within admin) with: bar reference, weight, fineness, vault
+    location, acquisition date, insurance value
+  • Only Custody staff and the RM can view and edit individual bar records
+  • The RM sees this section in the admin client view — they can click through
+    to see each bar's full custody record, last audit date, and insurance policy
+  • Major Admin can reassign vault locations (transfer bars between vaults)
+
+================================================================================
+  SECTION 6: LOWER PANELS — 2×2 GRID
+================================================================================
+
+Four panels arranged in a 2-column, 2-row grid (stacks to 1 column on mobile).
+Each panel has a title bar with a gold icon and optionally an action link.
+
+────────────────────────────────────────────────────────────────────────────────
+  6A. PORTFOLIO ALLOCATION
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A horizontal bar chart (text-based, not a canvas chart) showing how the
+  client's total wealth is divided across asset classes. Each row is one asset
+  class: a colour dot, the class name, a proportional fill bar, the percentage,
+  and the value in thousands.
+
+WHAT IT SHOWS:
+  Per asset class (excluding Vault):
+  • Colour indicator dot (using each asset's color token)
+  • Asset class name (e.g., "Monetary")
+  • Fill bar proportional to allocation %
+  • Allocation % (right of bar)
+  • CHF value in K notation (e.g., "4,212K") — hidden on mobile
+
+  The last row is "Other" (2.3%, 300K) which in production represents
+  miscellaneous positions not categorised into the 5 main classes.
+
+HOW PERCENTAGES ARE CALCULATED:
+  allocation% = (assetClassValueCHF / totalPortfolioValueCHF) × 100
+  Rounded to 1 decimal place. All allocations should sum to 100%.
+
+DATA SOURCE:
+  • mockAssets → DB: computed from each asset class total / portfolio total
+
+BEHAVIOUR — SHOULD BE FUNCTIONAL:
+  • Clicking any row should navigate to that asset class's detail page
+  • On hover, the bar should highlight and show a tooltip:
+    "CHF {exactValue} · {percent}% of total portfolio"
+  • The bar widths are dynamic: set as `width: {allocation}%` inline style
+
+────────────────────────────────────────────────────────────────────────────────
+  6B. DOCUMENT VAULT (recent documents)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A list of the 5 most recently lodged documents in the client's vault,
+  with their status badges. Acts as a quick-reference before the client
+  navigates to the full Vault page.
+
+WHAT EACH ROW SHOWS:
+  • Document category icon (e.g., file-badge for corporate, home for property)
+  • Document name (e.g., "Certificate of Incorporation")
+  • Sub text: document category + date (e.g., "Corporate · Oct 2024")
+  • Status badge (colour-coded):
+      - SECURED (green): filed, no action required
+      - SEALED (purple): confidential, restricted view
+      - REVIEW DUE (amber): document expiry approaching, client should provide
+        updated version to RM
+      - PENDING (orange): uploaded but not yet reviewed/approved by RM
+
+  Action link: "View all →" navigates to /dashboard/vault
+
+DATA SOURCE:
+  • mockVaultDocs (simplified) → DB: SELECT TOP 5 FROM vaultDocuments
+    WHERE clientId = {id} ORDER BY lodgedAt DESC
+
+DOCUMENT STATUS LOGIC:
+  • SECURED: document is approved, current, no review needed
+  • SEALED: document marked confidential by RM; client can see it exists but
+    cannot download it without RM unlocking (e.g., a Will)
+  • REVIEW DUE: reviewDue date is within 90 days of today
+  • PENDING: document uploaded (by client or RM) but RM has not yet processed it
+
+ADMIN CONTEXT:
+  • The RM and Custody staff upload documents and set their status
+  • The RM can seal/unseal documents
+  • The RM must action PENDING documents — Major Admin sees a count of pending
+    documents across all RMs in their team dashboard
+  • When a document moves to REVIEW DUE, the RM receives an automated alert
+  • The client cannot delete documents from the vault — only the RM can remove
+    or archive a document (with audit log entry)
+
+────────────────────────────────────────────────────────────────────────────────
+  6C. RECENT ACTIVITY
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A list of the 5 most recent account events — transactions, custody events,
+  document lodgements, and statement generations. This is the client's "account
+  feed" — a chronological log of things that have happened on their account.
+
+WHAT EACH ROW SHOWS:
+  • Activity icon (colour-coded by type)
+  • Activity name/description (e.g., "Inbound Wire Transfer")
+  • Date
+  • Value (amount in CHF or asset units, or "—" for non-monetary events)
+    shown in green (inbound) or red (outbound) or grey (neutral)
+
+ACTIVITY TYPES AND THEIR SOURCES:
+  • Inbound Wire Transfer → from monetaryTransactions (type = inbound)
+  • Gold Purchase → from metalTransactions (type = acquisition)
+  • BTC Custody Transfer → from digitalAssetTransactions (type = custody)
+  • Quarterly Statement → from statements table (type = generated)
+  • Document Lodgement → from vaultDocuments (type = lodged)
+
+DATA SOURCE:
+  • mockActivity → DB: unified activity feed query across:
+      monetaryTransactions, metalTransactions, digitalAssetTransactions,
+      equityTransactions, bondTransactions, statements, vaultDocuments
+    WHERE clientId = {id} ORDER BY createdAt DESC LIMIT 5
+
+  Action link: "Full history →" navigates to /dashboard/transactions
+
+ADMIN CONTEXT:
+  • Every action an RM performs on a client account generates an activity entry
+  • The RM sees the same activity feed in their admin panel, plus additional
+    admin-only events (e.g., "Risk profile updated by RM", "KYC re-verified")
+  • Activity entries cannot be edited or deleted — they are an immutable log
+  • Major Admin and Super Admin can see all activity across clients, filtered
+    by admin, by client, by date range, and by activity type in /admin/audit
+
+────────────────────────────────────────────────────────────────────────────────
+  6D. RELATIONSHIP MANAGER CARD
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT IS:
+  A contact card showing the client's assigned Relationship Manager — their
+  name, title, availability status, phone number, and next scheduled call.
+  Includes a "Send Secure Message" button.
+
+WHAT IT SHOWS:
+  • RM initials in a gold circle (avatar — no photo in current implementation)
+  • RM full name (e.g., "Dr. Markus von Steiner")
+  • RM title (e.g., "Managing Director, Private Wealth")
+  • Availability status with green dot (e.g., "Available Mon–Fri, 08:00–18:00 CET")
+  • No Phone number; Just email
+  • Policy note: "All messages via secure portal only — no external email"
+  • Next scheduled call date (e.g., "Next scheduled call: 14 Mar 2026")
+  • "Send Secure Message" button → navigates to /dashboard/messages with
+    query param ?action=new&to=rm
+
+  Panel action: "Send message →" (top right) — same navigation target
+
+RM AVAILABILITY STATUS:
+  The green dot and text reflect the RM's current status:
+  • Available (green dot): within office hours for the RM's timezone, no OOO set
+  • Away (amber dot): RM has set OOO or is in a meeting block
+  • Unavailable (grey dot): outside office hours
+  This should update in real time (or at page load).
+
+DATA SOURCE:
+  • mockRM → DB: SELECT rm.name, rm.title, rm.phone, rm.availability,
+    clientReviews.nextCallDate FROM adminUsers rm JOIN clientAssignments ca
+    ON ca.adminId = rm.id WHERE ca.clientId = {id}
+
+ADMIN CONTEXT:
+  • The RM assigned to this client is set during client onboarding by the
+    Major Admin (or RM themselves, if allowed)
+  • If a client is reassigned to a different RM, this card updates to the new RM
+  • The old RM loses access to this client's data; the new RM gains full access
+  • Super Admin can force-reassign clients (e.g., if an RM leaves the firm)
+  • The RM sets their own availability schedule in their admin profile settings
+  • If the RM is on leave, Major Admin can set a temporary cover RM — the card
+    then shows the cover RM with a note: "Cover: [Name] while [RM name] is away"
+
+================================================================================
+  RESPONSIVE BEHAVIOUR
+================================================================================
+
+  ≥ 1025px (desktop, sidebar visible):
+    • Portfolio hero: 3-column grid (main card 2 cols, 2 mini cards in col 3)
+    • Asset grid: 3 columns
+    • Lower panels: 2 columns
+
+  769px – 1024px (tablet):
+    • Portfolio hero: 2-column grid (main card full width, unrealised gain only)
+    • "Next Review" mini card is hidden
+    • Asset grid: 2 columns
+    • Lower panels: 2 columns
+
+  390px – 768px (mobile):
+    • Portfolio hero: 1 column (all cards stacked)
+    • Quick actions: 4 equal columns (icons + truncated labels)
+    • Asset grid: 2 columns
+    • Metals grid: 1 column
+    • Lower panels: 1 column (all stacked)
+    • Allocation CHF values (300K etc.) hidden to save space
+    • RM message banner sub-text hidden
+
+  ≤ 390px (small phone):
+    • Asset grid: 1 column
+    • Quick actions: 2 columns (2×2)
+
+================================================================================
+  FULL FUNCTIONALITY REQUIREMENTS (what must be built to go live)
+================================================================================
+
+The following are currently hard-coded with mock data and must be replaced with
+real data fetching, real navigation, and real actions:
+
+  1. All data sourced from Prisma DB via server-side fetching (Server Components
+     or route handlers) — no more mock-data imports in this page file
+
+  2. RM Message Banner:
+     - Real unread count from messages API
+     - Hides when count = 0
+     - Clicking navigates to /dashboard/messages
+
+  3. Portfolio total value:
+     - Computed server-side from all asset class positions
+     - Live FX rates for currency conversion (cached, refreshed every 15 min)
+     - Quarter snapshot comparison from DB
+
+  4. Unrealised gain:
+     - Computed from sum of (currentValue − costBasis) across all positions
+
+  5. Next review card:
+     - Real scheduled review date from DB
+     - Real progress bar computation
+
+  6. Stats strip:
+     - Account status reflects real DB value
+     - Status colour-coded: green (Fully Active), amber (Restricted), red (Suspended)
+
+  7. Quick actions:
+     - All 4 buttons are real links with correct navigation
+     - Transfer and vault upload buttons check account status before navigating
+     - Statement download triggers real PDF generation
+
+  8. Asset cards:
+     - Each card shows real values from DB
+     - Each card is a clickable link to the correct detail page
+     - Empty state shown if no data exists for that class
+
+  9. Metals breakdown:
+     - Real holdings from DB
+     - Live CHF values from metals price feed
+
+  10. Portfolio allocation bars:
+      - Real percentages, real CHF values
+      - Rows are clickable links
+
+  11. Document vault panel:
+      - Real 5 most recent documents
+      - Real status badges
+
+  12. Recent activity panel:
+      - Real 5 most recent events from unified activity feed
+
+  13. RM card:
+      - Real RM name, title, phone, availability from DB
+      - Real next call date
+      - Availability dot updates at page load
+
+================================================================================
+  ADMIN-SPECIFIC VISIBILITY ON THIS PAGE
+================================================================================
+
+When an RM admin views /admin/clients/{id}/portfolio, they see the same layout
+but with additional admin-only elements overlaid:
+
+  1. An "Edit Portfolio" toolbar at the top with quick links to:
+     - Add/edit asset positions
+     - Upload documents
+     - Schedule review
+     - Change account status
+
+  2. Each asset card has an "Edit" pencil icon (top right corner)
+
+  3. The stats strip shows additional fields not visible to the client:
+     - Internal client tier (Platinum, Gold, Standard)
+     - KYC expiry date (highlighted red if within 60 days)
+     - AML risk score (Low / Medium / Watch)
+
+  4. The RM card is replaced by a "Client Owner" card showing the RM's
+     own admin profile (since the RM is viewing their own page)
+
+  5. The activity panel shows admin-only events too (e.g., "Data corrected
+     by RM — gold cost basis updated")
+
+  6. A sticky "Last updated by" bar at the bottom: "Portfolio last updated
+     by Dr. Markus von Steiner · 2 hours ago"
+
+================================================================================
+  APPENDIX: FINANCIAL ENGINE — HOW ALL NUMBERS ARE COMPUTED
+  (Applies to every page in the portal, documented here as foundation)
+================================================================================
+
+This section explains the rules that govern every number in the portal.
+Everything the client sees — total value, P&L, allocation %, performance charts
+— is derived from these rules. If the RM enters bad data, every figure is wrong.
+
+────────────────────────────────────────────────────────────────────────────────
+  A1. THE ONBOARDING DATE — THE ACCOUNT ANCHOR
+────────────────────────────────────────────────────────────────────────────────
+
+When an RM creates a client account they set one foundational field:
+
+  onboardedAt: DateTime
+
+This can be any past date. For a legacy client joined in 2015, the RM sets
+onboardedAt = 2015-01-01. This becomes the system's hard floor for ALL data.
+
+THE ABSOLUTE RULE:
+  No transaction on this account may have a date earlier than onboardedAt.
+  if (transaction.transactionDate < client.onboardedAt) → REJECT
+
+Enforced at three layers:
+  - UI: admin date picker minimum = client.onboardedAt (earlier dates greyed out)
+  - API: Zod schema rejects any transactionDate < onboardedAt
+  - DB: CHECK constraint on AssetTransaction table
+
+WHY: The onboarding date is when ZPF officially took stewardship of the client's
+wealth. Regulatory rules (FINMA) require portfolio records to only cover the
+period under the custodian's actual management. If the client's true history
+starts in 2015, the RM sets onboardedAt to 2015 — that IS the start of record.
+
+OPENING POSITIONS:
+  The RM's first transactions are CREDIT entries dated at (or just after)
+  onboardedAt — these are the client's opening holdings. The price the RM
+  enters on that date becomes the permanent cost basis for those assets.
+
+────────────────────────────────────────────────────────────────────────────────
+  A2. HOW THE RM ENTERS HISTORICAL TRANSACTIONS
+────────────────────────────────────────────────────────────────────────────────
+
+Per transaction, the RM enters:
+
+  transactionDate   The actual historical date (≥ onboardedAt, ≤ today)
+                    This date is the CANONICAL TRUTH. It is used for:
+                    cost basis, activity feed, performance chart, P&L
+  direction         CREDIT (acquisition/deposit) or DEBIT (sale/withdrawal)
+  assetClass        MONETARY | SECURITIES | METALS | DIGITAL | REAL_ESTATE
+  quantity          Units (troy oz, shares, BTC, etc.) — null for cash
+  priceAtDate       Price per unit in native currency on transactionDate
+                    → This is the cost basis price. Never changes after entry.
+  fxRateAtDate      CHF conversion rate on transactionDate (for non-CHF assets)
+  amountChf         Auto-calculated: quantity × priceAtDate × fxRateAtDate
+                    (RM can manually override if needed)
+  description       Free text shown in client activity feed
+
+PRICE LOOKUP:
+  The admin form has a "Lookup historical price" button per asset type:
+    - Gold/Silver/Platinum: from metals-api.com daily history (pre-loaded)
+    - BTC/ETH: from CoinGecko daily history (pre-loaded)
+    - FX rates: from Frankfurter API daily history (pre-loaded)
+    - Equities: manual entry only (no free historical stock price API)
+    - Real estate: always manual
+  Auto-fills priceAtDate and fxRateAtDate. RM can override.
+
+QUANTITY TRACKING — HOW HOLDINGS ARE BUILT:
+  The system never stores a fixed "current balance". It computes it fresh:
+    currentQuantity = Σ(CREDIT quantities) − Σ(DEBIT quantities)
+    for all transactions where transactionDate ≤ today
+
+  Example — gold over time:
+    2015-03-14  CREDIT  10 oz @ CHF 1,147  → holds 10 oz
+    2016-08-22  CREDIT   5 oz @ CHF 1,041  → holds 15 oz
+    2019-04-10  DEBIT    3 oz @ CHF 1,302  → holds 12 oz  ← current
+
+────────────────────────────────────────────────────────────────────────────────
+  A3. REAL-TIME PORTFOLIO VALUATION
+────────────────────────────────────────────────────────────────────────────────
+
+Total portfolio value is computed dynamically, never stored as a fixed number.
+Recalculated when: RM adds/edits/deletes a transaction · daily price update runs
+· RM triggers manual recalc.
+
+Per asset class:
+  MONETARY:    Σ(account balances in native currency) × live FX rate to CHF
+               FX rates refresh every 15 min (Frankfurter API)
+  EQUITIES:    sharesHeld × currentSharePriceCHF (manually updated by RM)
+  BONDS:       marketValue (manual) + accruedInterest (coupon formula)
+  METALS:      troyOzHeld × live spot price CHF (metals feed, 15 min refresh)
+  DIGITAL:     quantityHeld × live spot CHF (CoinGecko, 15 min refresh)
+  REAL ESTATE: last confirmed independent valuation entered by RM (manual)
+               Shows "Last valued: [date]" — no live feed exists for property
+
+  TOTAL = Σ(all asset values in CHF)  ←  this is what the portfolio hero shows
+  Vault excluded (no monetary value)
+
+────────────────────────────────────────────────────────────────────────────────
+  A4. P&L CALCULATION (UNREALISED GAIN/LOSS)
+────────────────────────────────────────────────────────────────────────────────
+
+  unrealisedGainCHF = currentValueCHF − costBasisCHF
+  unrealisedGainPct = unrealisedGainCHF / costBasisCHF × 100
+
+COST BASIS (FIFO method):
+  When assets are sold, the oldest acquisition lots are consumed first.
+  Cost basis of remaining lots = Σ(CHF amounts of unsold CREDIT lots)
+
+  Example (from above gold history):
+    Lot 1: 10 oz @ 1,147 = CHF 11,470   (2015)
+    Lot 2:  5 oz @ 1,041 = CHF 5,207.50 (2016)
+    Sold 3 oz in 2019 (FIFO: from Lot 1)
+    → Lot 1 remaining: 7 oz, basis CHF 8,029
+    → Lot 2 remaining: 5 oz, basis CHF 5,207.50
+    → Total 12 oz, cost basis CHF 13,236.50
+
+  Current gold at CHF 2,400/oz:
+    currentValue = 12 × 2,400 = CHF 28,800
+    unrealisedGain = 28,800 − 13,236.50 = +CHF 15,563.50 (+117.6%)
+
+YTD UNREALISED GAIN (shown on portfolio hero card):
+  Compares current portfolio value to portfolio value on Jan 1 of this year.
+  Jan 1 value comes from the PortfolioSnapshot taken at year-end.
+
+────────────────────────────────────────────────────────────────────────────────
+  A5. PORTFOLIO VALUE HISTORY & PERFORMANCE CHARTS
+────────────────────────────────────────────────────────────────────────────────
+
+The performance charts show how the portfolio has grown since onboardedAt.
+The system can reconstruct the portfolio value on ANY past date because it has
+every transaction with its exact historical date + historical price data.
+
+PORTFOLIO SNAPSHOTS (PortfolioSnapshot table):
+  - On account creation: a backfill job computes monthly snapshots from
+    onboardedAt to today and stores them
+  - Going forward: nightly job stores a daily snapshot
+  - When a historical transaction is edited: all snapshots from that date
+    forward are recomputed (background BullMQ job)
+
+  Chart rendering: API returns { date, totalValueCHF }[] from snapshots.
+  Chart periods and their snapshot granularity:
+    "All"  → monthly points from onboardedAt to today
+    "3Y"   → weekly points for last 3 years
+    "1Y"   → weekly points for last 12 months
+    "6M"   → daily points for last 6 months
+    "3M"   → daily points for last 3 months
+    "1M"   → daily points for last 30 days
+
+BENCHMARK LINE:
+  Normalised to match portfolio start value on the first date of each period:
+    benchmarkValue(T) = startPortfolioValue × (benchmarkIndex(T) / benchmarkIndex(T_start))
+
+────────────────────────────────────────────────────────────────────────────────
+  A6. DATE VALIDATION RULES — FULL REFERENCE
+────────────────────────────────────────────────────────────────────────────────
+
+  Rule 1  transactionDate ≥ onboardedAt                            (UI + API + DB)
+  Rule 2  transactionDate ≤ today (no future-dated completed txns) (UI + API)
+  Rule 3  onboardedAt ≤ today (cannot onboard a client in future)  (UI + API)
+  Rule 4  kycVerifiedAt ≥ onboardedAt                             (API + DB)
+  Rule 5  DEBIT date ≥ earliest available CREDIT lot for that asset (API)
+          Error: "Cannot record a disposal before the asset was acquired"
+  Rule 6  mandateRevisedAt ≥ onboardedAt                          (API)
+  Rule 7  document reviewDate > today (at time of first creation)  (API)
+  Rule 8  kycExpiresAt > kycVerifiedAt                            (API + DB)
+  Rule 9  nextReviewDate > lastReviewCompletedAt                  (API)
+  Rule 10 DEBIT quantity ≤ currentQuantityHeld at that date       (API)
+          Error: "Insufficient quantity: holds X — cannot sell Y"
+
+────────────────────────────────────────────────────────────────────────────────
+  A7. COMPUTATION CHAIN SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+  RM sets onboardedAt (anchor)
+         ↓
+  RM enters CREDIT transactions (each ≥ onboardedAt, with historical price)
+         ↓
+  System stores → triggers P&L recalculation:
+    currentQty    = Σ(CREDIT) − Σ(DEBIT)
+    costBasisCHF  = FIFO lot matching on CREDIT transactions
+    currentValue  = currentQty × livePrice × liveFX
+    unrealisedGain = currentValue − costBasisCHF
+         ↓
+  portfolioTotal    = Σ(all asset currentValues)
+  allocationPct     = assetValue / portfolioTotal × 100
+         ↓
+  Snapshot backfill: portfolioValue computed for every month from onboardedAt
+         ↓
+  Client sees:
+    Portfolio page    → live total, unrealised gain YTD, allocation %
+    Performance page  → chart from onboardedAt to today (from snapshots)
+    Asset pages       → per-asset holdings, cost basis, live value, P&L
+    Activity feed     → transactions sorted by transactionDate DESC
+
+================================================================================
+  END OF PORTFOLIO PAGE SPEC
+================================================================================

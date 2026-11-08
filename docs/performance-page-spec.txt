@@ -1,0 +1,527 @@
+================================================================================
+  ZPF — DASHBOARD PERFORMANCE PAGE
+  Functional Specification & Section Breakdown
+  File: /app/dashboard/performance/page.tsx
+  Route: /dashboard/performance
+  Last updated: 2026-04-03
+================================================================================
+
+This is the analytics page — it shows the client how their portfolio has
+performed over time, how each asset class has contributed to that performance,
+and what the risk profile of the portfolio looks like. It is the most
+data-heavy page in the portal.
+
+Unlike the Portfolio page (which shows today's snapshot), this page is about
+TIME. Every section here answers the question: "how did we do over X period?"
+
+All data flows from the financial engine rules documented in portfolio-page-spec.txt
+Appendix A. All charts are built from PortfolioSnapshot records, not live prices.
+
+This page is 'use client' — it uses React state (period selector and return view
+toggle). All data is fetched once on page load, then filtered/displayed client-side.
+
+================================================================================
+  PAGE HEADER
+================================================================================
+
+WHAT IT SHOWS:
+  • Title: "Portfolio Performance"
+  • Sub-line: "{ClientID} · {mandate type} · Benchmarked vs {benchmark name}"
+    e.g., "ZPF-7741-0038 · Balanced mandate · Benchmarked vs ZPF Balanced 60/40 Index"
+  • "Performance Report" download button (top right)
+
+PERFORMANCE REPORT DOWNLOAD:
+  • Triggers POST /api/reports/performance?clientId={id}&period={selectedPeriod}&format=pdf
+  • Generates a PDF with: KPI summary, full chart data, asset returns table,
+    monthly returns grid, risk metrics — for the currently selected period
+  • Client can always download — not admin-gated
+
+BENCHMARK NAME:
+  • Displayed dynamically from client's mandate type:
+    - Advisory / Balanced → "ZPF Balanced 60/40 Composite Index"
+    - Conservative → "ZPF Conservative Capital Preservation Index"
+    - Growth / Aggressive → "ZPF Growth Equity Index"
+  • DATA: clients.mandateType → lookup in benchmarkConfig table
+
+================================================================================
+  SECTION 1: PERIOD SELECTOR
+================================================================================
+
+WHAT IT IS:
+  A pill-style tab bar with 7 period options. Selecting a period updates EVERY
+  section on the page simultaneously (KPI cards, chart, asset returns).
+
+PERIODS:
+  1M  → last 30 days
+  3M  → last 3 months
+  6M  → last 6 months
+  YTD → Jan 1 of current year to today
+  1Y  → last 12 months
+  3Y  → last 36 months
+  All → from client's onboardedAt to today
+
+DEFAULT: 1Y (most useful for an annual review context)
+
+HOW IT WORKS:
+  • State: const [period, setPeriod] = useState<Period>('1Y')
+  • Selecting a period re-renders KPIs and chart with data for that period
+  • Asset returns panel has its OWN sub-toggle (1M / YTD / 1Y) — independent
+    of the main period selector (explained in Section 3)
+  • The monthly returns grid always shows the last 12 calendar months —
+    unaffected by the period selector
+
+IMPORTANT — "All" PERIOD:
+  The "All" tab shows the full history from onboardedAt to today.
+  • If the client was onboarded in 2015 (onboardedAt = 2015-01-01), "All"
+    shows ~11 years of data
+  • If the RM just created the account and entered opening positions today,
+    "All" shows only today's single data point (flat line)
+  • The "All" period is what makes the historical backdating meaningful —
+    this is the full story the RM built
+  • Data points: monthly snapshots from onboardedAt onward (from PortfolioSnapshot)
+
+DATA SOURCE:
+  • mockPerformanceCharts[period] → DB: PortfolioSnapshot WHERE
+    snapshotDate ≥ periodStart AND snapshotDate ≤ today
+    for clientId = {id}, ordered by snapshotDate ASC
+
+================================================================================
+  SECTION 2: KPI CARDS (4 cards)
+================================================================================
+
+Four metric cards that update when the period changes.
+
+────────────────────────────────────────────────────────────────────────────────
+  Card 1: PORTFOLIO RETURN
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT SHOWS:
+  • Large number: portfolio return % for the selected period
+    (e.g., "+8.69%" for 1Y, green if positive)
+  • Sub: "+CHF {absGain}K absolute gain" (the actual CHF amount gained)
+
+HOW IT IS CALCULATED:
+  portfolioReturn% = (endValue − startValue) / startValue × 100
+    where startValue = portfolioTotal at the start of the selected period
+    and   endValue   = portfolioTotal today
+
+  absGainCHF = endValue − startValue
+
+  The startValue for each period:
+    1M  → portfolio value 30 days ago (from PortfolioSnapshot closest to that date)
+    3M  → portfolio value 90 days ago
+    6M  → portfolio value 180 days ago
+    YTD → portfolio value on Jan 1 of current year (year-end snapshot)
+    1Y  → portfolio value 365 days ago
+    3Y  → portfolio value 3 years ago
+    All → portfolio value on onboardedAt (first snapshot = opening positions value)
+
+NOTE — net of fees:
+  Performance figures should be NET of ZPF custody and advisory fees.
+  Fee amounts are configured per client in a fee schedule (managed by admin).
+  Fee impact should be visible: a tooltip on this card shows "After fees of X%pa"
+
+DATA:
+  mockPerformanceCharts[period].portfolioReturn, .absGain
+  → DB: computed from PortfolioSnapshot start/end values
+
+────────────────────────────────────────────────────────────────────────────────
+  Card 2: VS BENCHMARK
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT SHOWS:
+  • Large number: outperformance vs benchmark for the selected period
+    (e.g., "+2.43%" for 1Y — green if positive, red if negative)
+  • Sub: "Benchmark: {benchmarkReturn}%" (what the benchmark did in same period)
+  • Card background: green if outperforming, neutral if underperforming
+
+HOW IT IS CALCULATED:
+  outperformance = portfolioReturn − benchmarkReturn
+  benchmarkReturn = (benchmarkEnd − benchmarkStart) / benchmarkStart × 100
+    using normalised benchmark values (same starting value as portfolio)
+
+BENCHMARK SOURCE:
+  BenchmarkHistory table — pre-populated from index data on deployment,
+  updated nightly. The specific benchmark is determined by the client's
+  mandate type (see header section above).
+
+WHY THIS MATTERS:
+  This is the core accountability metric. If the portfolio is underperforming
+  the benchmark, the RM needs to explain why. The Major Admin and Super Admin
+  can see a league table of all RMs' portfolios vs benchmark.
+
+DATA:
+  mockPerformanceCharts[period].benchmarkReturn
+  outperformance = portfolioReturn − benchmarkReturn
+
+────────────────────────────────────────────────────────────────────────────────
+  Card 3: ANNUALISED RETURN (3Y)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT SHOWS:
+  • Fixed value: the 3-year compound annual growth rate (CAGR)
+  • This card does NOT change with the period selector — it always shows 3Y CAGR
+  • Sub: "Compound annual growth rate"
+
+HOW IT IS CALCULATED:
+  CAGR (3Y) = (endValue / startValue)^(1/3) − 1
+    where startValue = portfolio value 3 years ago
+    and   endValue   = portfolio value today
+
+  Example: portfolio grew from CHF 10.25M to CHF 12.847M over 3 years:
+    CAGR = (12.847 / 10.250)^(1/3) − 1 = 7.82%
+
+WHY CAGR AND NOT SIMPLE RETURN:
+  CAGR smooths out volatility to show the equivalent steady growth rate.
+  It is the standard metric for comparing portfolio managers over multi-year
+  periods. Private banking clients care more about long-term compounding than
+  short-term swings.
+
+DATA:
+  Computed from PortfolioSnapshot 3 years ago vs today.
+  Not period-dependent — always uses 3-year window.
+  If client has been onboarded < 3 years: shows "N/A" with sub "Less than 3 years of history"
+
+────────────────────────────────────────────────────────────────────────────────
+  Card 4: MAX DRAWDOWN (1Y)
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT IT SHOWS:
+  • Large number: maximum peak-to-trough decline in portfolio value over last 12 months
+    (e.g., "−3.6%")
+  • Sub: date range of the trough period (e.g., "Aug → Nov 2025 trough")
+  • Icon: warning triangle — this is a risk metric, not a return metric
+  • Card colour: neutral/grey (not red) — a small drawdown is normal and expected
+
+HOW IT IS CALCULATED:
+  maxDrawdown = min( (troughValue − peakValue) / peakValue ) × 100
+    over all consecutive peak/trough pairs in the last 12 months of daily snapshots
+
+  Peak = highest portfolio value before a subsequent decline
+  Trough = lowest portfolio value reached in the following decline
+  The maximum drawdown is the worst such peak-to-trough percentage
+
+WHAT IT TELLS THE CLIENT:
+  "The worst decline you experienced in the past year was −3.6%, from peak
+  to trough. This recovers when the portfolio exceeds the prior peak again."
+  For a Balanced mandate, a drawdown of −3.6% is considered acceptable and
+  within the expected risk parameters.
+
+DATA:
+  mockRiskMetrics.maxDrawdown
+  → computed from PortfolioSnapshot daily values over trailing 12 months
+
+================================================================================
+  SECTION 3: PORTFOLIO VALUE CHART
+================================================================================
+
+WHAT IT IS:
+  A custom SVG line chart showing:
+  • Gold line: portfolio value over the selected period
+  • Dashed grey line: benchmark normalised to same starting point
+  • A gold dot on the most recent data point (today's value)
+  • Gradient fill under the portfolio line
+  • 3 horizontal grid lines at 25%, 50%, 75% of chart height
+  • X-axis date labels
+
+CHART MECHANICS (custom SVG — no chart library used):
+  • viewBox is fixed at 600×170 units, scaled to container width (responsive)
+  • Y-axis range: min(all values) × 0.999 to max(all values) × 1.001
+    (1% padding above and below all data points)
+  • X-axis: data points evenly distributed across the 600-unit width
+  • The SVG recomputes with useMemo when the period changes
+  • Values are in millions CHF (e.g., 12.847 = CHF 12,847,000)
+
+WHAT REPLACES THE MOCK DATA IN PRODUCTION:
+  API: GET /api/performance/chart?clientId={id}&period={period}
+  Returns: {
+    labels: string[],          // x-axis labels (dates)
+    portfolio: number[],       // portfolio values in millions CHF
+    benchmark: number[],       // benchmark values (normalised)
+    portfolioReturn: number,   // total return % for period
+    benchmarkReturn: number,   // benchmark return % for period
+    absGain: number            // absolute CHF gain for period
+  }
+  The labels and data point count vary by period:
+    1M  → daily labels ["Mar 3", "Mar 10", ...]   ~5 points
+    3M  → weekly labels ["Jan", "Feb", "Mar", ...]  ~4 points
+    6M  → weekly labels                           ~7 points
+    YTD → weekly labels                           ~4–13 points
+    1Y  → monthly labels                         ~13 points
+    3Y  → quarterly labels                       ~12 points
+    All → semi-annual labels (varies by account age)
+
+CHART STRIP (below the chart line):
+  4 stats below the chart:
+  1. Period Start: "CHF {startValue}M" — what the portfolio was worth at period start
+  2. Current Value: "CHF {currentValue}M" — today's value
+  3. Absolute Gain: "+CHF {gainK}K" — in thousands (green)
+  4. Outperformance: "+{delta}% vs index" — how much better/worse than benchmark
+
+BENCHMARK NORMALISATION:
+  The benchmark line always starts at the same CHF value as the portfolio on
+  the first day of the selected period. This makes it a fair comparison:
+  both lines start at the same point, and the gap at the end shows
+  outperformance or underperformance.
+
+  benchmarkNormalised(T) = portfolioStart × (benchmarkIndex(T) / benchmarkIndex(T_start))
+
+ADMIN CONTEXT:
+  • The RM admin views the same chart on the client detail page
+  • Additionally, in the admin view, hovering a data point shows:
+    - Exact portfolio value on that date
+    - Which transactions occurred near that date (annotations)
+  • The Major Admin's team dashboard shows a simplified chart per RM's AUM
+
+================================================================================
+  SECTION 4: ASSET CLASS RETURNS PANEL
+================================================================================
+
+WHAT IT IS:
+  A panel showing the return of each individual asset class (Monetary, Securities,
+  Metals, Digital, Real Estate) for a selected sub-period. Has its own 3-button
+  toggle (1M / YTD / 1Y) independent of the main period selector.
+
+WHAT IT SHOWS:
+  For each of the 5 asset classes:
+  • Colour dot (matching the asset's brand colour from the portfolio page)
+  • Asset class name
+  • Return % for the selected sub-period (green if positive, red if negative)
+  • A bidirectional bar chart:
+    - Bars grow left (negative) or right (positive) from a centre divider
+    - Maximum bar width is capped at 10% return (bars for larger returns just
+      fill to the edge — no overflow)
+
+  At the bottom: "Portfolio Total" row showing:
+  • Total portfolio return for that sub-period (gold text)
+  • Outperformance vs benchmark for that sub-period
+
+HOW EACH ASSET CLASS RETURN IS CALCULATED:
+  For sub-period [T_start, T_end]:
+    assetReturn% = (assetValueCHF(T_end) − assetValueCHF(T_start))
+                  / assetValueCHF(T_start) × 100
+
+  Where assetValueCHF(T) is taken from AssetClassSnapshot records
+  (the same snapshot mechanism as portfolio, but per asset class).
+
+  NOTE on Monetary Holdings return:
+    This will be very small — cash earns interest but does not appreciate.
+    A 1M return of +0.1% for cash is normal. This is shown to be complete,
+    not because cash is a growth driver.
+
+  NOTE on Real Estate return:
+    Real estate has no live price → return only changes when the RM enters
+    a new valuation. If no new valuation was entered in the sub-period,
+    return = 0.0% (shown neutrally, not as zero performance)
+
+DATA SOURCE:
+  mockAssetReturns → DB: AssetClassSnapshot per asset class per client
+  API: GET /api/performance/asset-returns?clientId={id}
+  Returns all three periods (1M, YTD, 1Y) in one request — no re-fetch on toggle
+
+RETURN VIEW TOGGLE:
+  State: const [returnView, setReturnView] = useState<ReturnView>('1Y')
+  Clicking 1M / YTD / 1Y re-renders the bars and percentages using pre-loaded data
+  Does NOT re-fetch from the API
+
+ADMIN CONTEXT:
+  • The RM can see this same breakdown and use it to identify which asset class
+    is dragging or leading performance before a client call
+  • Major Admin sees a similar breakdown across all clients in their tree —
+    aggregated by asset class (e.g., "metals returning +6.1% across all clients")
+
+================================================================================
+  SECTION 5: MONTHLY RETURNS GRID
+================================================================================
+
+WHAT IT IS:
+  A heat-map style grid showing the return for each of the last 12 calendar
+  months. Each month is a small tile, colour-coded by direction and intensity.
+
+WHAT IT SHOWS:
+  12 tiles, one per month (last 12 months, regardless of period selector):
+  • Month label (e.g., "Apr 25")
+  • Return % (green/positive or red/negative)
+  • Background colour intensity scales with magnitude:
+      - Faint: return close to 0%
+      - Saturated: larger return or loss
+  • Legend: green dot "Positive month" / red dot "Negative month"
+  • Count: "10 / 12 positive months" (bottom right of the panel)
+
+HOW EACH MONTH'S RETURN IS CALCULATED:
+  monthReturn% = (portfolioValue(last day of month) − portfolioValue(first day of month))
+                / portfolioValue(first day of month) × 100
+
+  Both values from PortfolioSnapshot records (month-end and month-start snapshots).
+
+  For the current incomplete month (April 2026 in this case):
+    = (portfolioValue(today) − portfolioValue(Apr 1)) / portfolioValue(Apr 1) × 100
+
+COLOUR INTENSITY FORMULA (CSS):
+  intensity = Math.min(Math.abs(returnValue) / 2.5, 1)
+  positive background: rgba(29,158,117, 0.08 + intensity × 0.22)
+  negative background: rgba(192,57,43,  0.08 + intensity × 0.22)
+
+  This means a +2.5% month gets full intensity green; a −2.5% month gets full
+  intensity red. A ±0.1% month is barely tinted.
+
+THIS SECTION IS ALWAYS LAST 12 MONTHS:
+  It does not change with the main period selector. It is a fixed 12-month
+  lookback for quick month-by-month pattern recognition.
+
+DATA SOURCE:
+  mockMonthlyReturns → DB: PortfolioSnapshot month-start and month-end values
+  API: GET /api/performance/monthly-returns?clientId={id}
+  Returns: { month: string, value: number }[] — always last 12 months
+
+================================================================================
+  SECTION 6: RISK METRICS PANEL
+================================================================================
+
+WHAT IT IS:
+  A 3×2 grid of 6 formal risk metrics. These are standard quantitative measures
+  used by portfolio managers to describe the risk/return profile of a portfolio.
+  All are trailing 12 months unless the label says otherwise.
+
+THE 6 METRICS:
+
+  1. SHARPE RATIO (e.g., 1.42)
+     Formula: (portfolioReturn − riskFreeRate) / portfolioVolatility
+     riskFreeRate: Swiss 3-month T-bill rate (admin-configurable system param)
+     portfolioVolatility: annualised standard deviation of monthly returns
+     Interpretation:
+       < 1.0 → poor risk-adjusted return
+       1.0–2.0 → good (1.42 is solid for a balanced portfolio)
+       > 2.0 → excellent
+     Colour: gold (it's a ratio, not a return — neither green nor red)
+
+  2. ANNUALISED VOLATILITY (e.g., 6.8%)
+     Formula: stddev(monthly returns) × √12
+     Lower is better for a conservative/balanced mandate.
+     For Balanced — Medium: 6–9% volatility is expected and acceptable.
+     Colour: neutral
+
+  3. MAX DRAWDOWN (e.g., −3.6%)
+     Same value as KPI Card 4 — shown here again in context with other metrics.
+     Colour: red (it represents a loss period)
+
+  4. BETA VS SPI (e.g., 0.72)
+     Formula: Cov(portfolioReturns, spiReturns) / Var(spiReturns)
+     SPI = Swiss Performance Index (Swiss market benchmark)
+     Beta < 1.0 means the portfolio moves less than the market:
+       0.72 → if SPI falls 10%, portfolio expected to fall ~7.2%
+     For a private client with a Balanced mandate, beta < 1 is desirable.
+     Colour: gold (it's a coefficient, not directional)
+
+  5. ALPHA 1Y (e.g., +2.43%)
+     Formula: portfolioReturn − (riskFreeRate + beta × (benchmarkReturn − riskFreeRate))
+     This is the return generated by the RM's skill, over and above what you'd
+     expect given the portfolio's beta exposure.
+     Positive alpha → RM added value. Negative alpha → RM destroyed value.
+     Colour: green if positive, red if negative
+
+  6. BENCHMARK CORRELATION (e.g., 0.84)
+     Formula: Pearson correlation between portfolio monthly returns and benchmark
+     monthly returns over trailing 12 months
+     Range: −1 to +1
+     0.84 → portfolio moves in the same direction as benchmark most of the time,
+     but not perfectly — there is meaningful divergence (i.e., the RM is adding
+     active management, not just tracking the index)
+     Very high correlation (>0.95) would suggest passive index-tracking,
+     which would raise the question: why pay advisory fees?
+     Colour: neutral
+
+HOW THESE ARE COMPUTED:
+  All 6 metrics require a series of monthly return values for the trailing 12M.
+  Input: monthlyReturns[] from PortfolioSnapshot (same data as Section 5)
+  Input: benchmarkMonthlyReturns[] from BenchmarkHistory
+  Input: riskFreeRate from SystemConfig (e.g., 1.8% for current Swiss rate)
+
+  These are expensive to compute on-demand. They should be:
+  • Pre-computed nightly by a BullMQ job (riskMetrics worker)
+  • Stored in a RiskMetricsCache table per client
+  • Served from cache on page load (cached values are valid until next day's run)
+
+DATA SOURCE:
+  mockRiskMetrics → DB: RiskMetricsCache WHERE clientId = {id} AND period = '1Y'
+  API: GET /api/performance/risk-metrics?clientId={id}
+  If cache is stale (older than 24h): return last known values + flag "as of [date]"
+
+DISCLAIMER (bottom of page):
+  "Past performance is not indicative of future results. All figures are in CHF
+  unless stated otherwise. Performance data is net of custody and advisory fees.
+  Benchmark: ZPF Balanced 60/40 Composite Index. Risk metrics are computed on
+  monthly returns over the stated trailing period. This information is provided
+  for informational purposes only and does not constitute investment advice."
+  This is a legal requirement. The text must not be removed or hidden.
+
+================================================================================
+  FULL FUNCTIONALITY REQUIREMENTS (what must be built to go live)
+================================================================================
+
+Currently using mock data. Replace with:
+
+  1. Period selector:
+     - Fetches real chart data per period from API
+     - "All" period works only after PortfolioSnapshot backfill job has run
+
+  2. KPI cards:
+     - All 4 values computed from real snapshot data
+     - CAGR card shows "N/A" if < 3 years of history
+     - Max drawdown card shows actual peak/trough dates, not hardcoded text
+
+  3. Chart:
+     - Real PortfolioSnapshot data points per period
+     - Real benchmark data from BenchmarkHistory
+     - Chart should show a tooltip on hover: "CHF {value}M · {date}"
+     - If period has only 1 data point (new account): show flat line with message
+       "Not enough history for this period"
+
+  4. Asset class returns:
+     - Real per-asset returns from AssetClassSnapshot
+     - Sub-period toggle fetches all 3 periods in one API call (no re-fetch)
+     - Real estate return shows 0% with "No new valuation" note if unchanged
+
+  5. Monthly returns grid:
+     - Always real last 12 months from PortfolioSnapshot
+     - Current incomplete month shows "MTD" label instead of full month name
+     - Positive month counter computed dynamically
+
+  6. Risk metrics:
+     - From RiskMetricsCache (pre-computed nightly)
+     - If cache missing: trigger on-demand compute (with loading state)
+     - Sharpe ratio uses current Swiss risk-free rate from SystemConfig
+
+  7. Performance report PDF:
+     - Generates from the currently selected period's data
+     - Includes all 6 sections as a formatted PDF
+     - ZPF letterhead, client name, date, legal disclaimer footer
+
+================================================================================
+  ADMIN-SPECIFIC VISIBILITY ON THIS PAGE
+================================================================================
+
+When the RM admin views /admin/clients/{id}/performance:
+  • Same page layout as the client view
+  • Additional admin-only overlay:
+    - "Data quality" indicator: was there any manual price override used?
+      If yes, show: "⚠ This chart includes manually-entered prices — see audit log"
+    - Ability to see raw snapshot data in a table (toggle "Show data table")
+    - "Recalculate snapshots" button (triggers the backfill BullMQ job)
+    - Shows the fee schedule used for net-of-fees calculation
+    - Can switch between net-of-fees and gross-of-fees views
+  • No edit functionality on this page (charts are read-only — to change them,
+    the RM must edit underlying transactions on the transactions/asset pages)
+
+Major Admin view (/admin/overview):
+  • Sees a summary performance table for all clients in their tree:
+    - Client name, AUM, 1Y return, vs benchmark, last updated
+  • Can click any row to go to that client's performance page
+
+Super Admin view:
+  • Same table but across ALL clients system-wide
+  • Can filter by RM, by asset class, by return range, by benchmark delta
+
+================================================================================
+  END OF PERFORMANCE PAGE SPEC
+================================================================================

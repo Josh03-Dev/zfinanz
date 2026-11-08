@@ -1,0 +1,1142 @@
+================================================================================
+  ZÜRICHBERG PRIVAT FINANZ AG — ADMIN (RELATIONSHIP MANAGER) PANEL
+  STRUCTURE SPECIFICATION
+  Prepared for: Internal Engineering Reference
+  Version: 1.0 | Date: April 2026
+================================================================================
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Admin (RM) is the ground-level operator of the ZPF platform. Every client
+account they manage was created by them or assigned to them. They are the
+client's Relationship Manager — the face of ZPF to that client.
+
+CORE RESPONSIBILITIES:
+  - Create client accounts (full identity, credentials, onboarding date)
+  - Build and maintain each client's complete portfolio history
+  - Enter all asset data and historical transactions (backdated to any date)
+  - Approve/reject withdrawal and transfer requests from their clients
+  - Message clients via the secure in-portal system (+ optional email delivery)
+  - Generate statements and upload documents to client vaults
+  - Monitor KYC expiry, document review dates, and account health
+  - Communicate internally with the wider ZPF team (departments)
+
+DATA SCOPE:
+  An Admin can only see and act on clients where ownerAdminId = their userId.
+  Attempting to access another admin's client returns 403 — no data leakage.
+
+NOTE ON RM DISPLAY:
+  The client's portal shows an RM card with a name, title, initials, phone,
+  and availability. By default this auto-populates from the Admin's StaffProfile.
+  An optional override exists per-client (ClientProfile.rmDisplay* fields) —
+  useful when the firm wants to display a senior partner's name even if a
+  junior admin handles day-to-day operations.
+
+DEPARTMENT MODEL:
+  ZPF operates multiple internal departments, each with their own portal login
+  and messaging capability. The RM (Admin) is not the only party who can contact
+  a client. Departments communicate independently:
+    - Relationship Manager (RM)     → day-to-day portfolio and advisory
+    - Compliance                    → KYC, FATCA/CRS, regulatory notices
+    - Operations                    → transfer confirmations, settlement notices
+    - Custody & Vault               → metals audit, document custody confirmations
+    - Advisory / Research           → market notes, rebalancing recommendations
+    - [SUGGESTION] Tax Desk         → tax planning notes, reporting documents
+    - [SUGGESTION] Legal            → legal correspondence, trust/estate matters
+  Each department has its own portal (login, inbox, compose) and their messages
+  appear in the client's portal under the relevant category badge.
+  See Section 7 (Department Portal) for the full spec.
+
+================================================================================
+ROUTE MAP
+================================================================================
+
+  /admin/overview                         — RM Dashboard
+  /admin/clients                          — My clients list
+  /admin/clients/new                      — Create client account
+  /admin/clients/[clientId]               — Client profile
+  /admin/clients/[clientId]/portfolio     — Portfolio setup + asset management
+  /admin/clients/[clientId]/transactions  — Transaction history + add/edit
+  /admin/clients/[clientId]/documents     — Document vault (admin view)
+  /admin/clients/[clientId]/kyc           — KYC management
+  /admin/clients/[clientId]/transfers     — Client transfer requests
+  /admin/clients/[clientId]/messages      — Client message threads (RM channel)
+  /admin/clients/[clientId]/activity      — Full client activity log
+  /admin/transfers                        — All transfers from my clients
+  /admin/messages                         — All message threads with my clients
+  /admin/audit                            — My own activity log
+  /admin/settings                         — My profile + notification settings
+
+================================================================================
+SIDEBAR NAVIGATION (Admin / RM view)
+================================================================================
+
+  Overview          /admin/overview
+  My Clients        /admin/clients
+  Transfers         /admin/transfers     [badge: pending count]
+  Messages          /admin/messages      [badge: unread count]
+  ─────────────────
+  Activity Log      /admin/audit
+  Settings          /admin/settings
+
+  Bottom:
+  [ZPF Logo]
+  RM display name + role badge (RELATIONSHIP MANAGER)
+  Availability status indicator (Available / In Meeting / Away)  ← live toggle
+  Logout
+
+================================================================================
+1. OVERVIEW DASHBOARD (/admin/overview)
+================================================================================
+
+All data scoped to this RM's own clients.
+
+────────────────────────────────────────────────────────────────────────────────
+TOP STATS STRIP (5 cards)
+────────────────────────────────────────────────────────────────────────────────
+
+  Card 1: My AUM
+    Value:    Sum of Portfolio.totalValueChf for all my clients
+    Sub:      "Across [N] active client accounts"
+    Trend:    +/- % vs. last quarter
+
+  Card 2: My Clients
+    Value:    Total count of my ClientProfiles
+    Sub:      "[N] active · [N] locked · [N] pending TOTP"
+    Click:    → /admin/clients
+
+  Card 3: Pending Transfers
+    Value:    Count of PENDING_REVIEW + UNDER_REVIEW from my clients
+    Color:    Amber if > 0
+    Click:    → /admin/transfers?tab=pending
+
+  Card 4: Unread Messages
+    Value:    Count of unread threads across my clients
+    Color:    Amber if > 0
+    Click:    → /admin/messages?filter=unread
+
+  Card 5: Alerts
+    Value:    Total count of items needing attention
+    Sub:      "[N] KYC expiring soon · [N] docs due review · [N] locked accounts"
+    Color:    Red if > 0, mist if 0
+
+────────────────────────────────────────────────────────────────────────────────
+ALERTS SECTION (Priority items)
+────────────────────────────────────────────────────────────────────────────────
+
+  Grouped by type, each item is a clickable row:
+
+  KYC EXPIRING (within 30 days):
+    "Adebayo S. (ZPF-7741-0038) — KYC expires 14 March 2027 · 11 days remaining"
+    [Renew KYC] → /admin/clients/[id]/kyc
+
+  DOCUMENTS DUE REVIEW:
+    "Power of Attorney — Dr. K. Adebayo · Review was due Jan 2026 (overdue)"
+    [View Document] → /admin/clients/[id]/documents
+
+  LOCKED ACCOUNTS:
+    "ZPF-8812-0041 (Keiko T.) — locked after 10 failed TOTP attempts"
+    [Unlock + Reset TOTP] → quick action inline
+
+  BENEFICIARY PENDING VERIFICATION:
+    "Adebayo S. has proposed a new beneficiary — pending your verification"
+    [Review] → /admin/clients/[id]/profile (beneficiary section)
+
+  [SUGGESTION] STALE PORTFOLIOS:
+    "3 clients have had no portfolio activity in 90+ days"
+    Prompts RM to review and confirm all holdings are still current.
+
+────────────────────────────────────────────────────────────────────────────────
+MY CLIENTS TABLE (mini view)
+────────────────────────────────────────────────────────────────────────────────
+
+  Last 5 active clients with quick stats:
+    Name | AUM | Last Login | Pending Items | [View]
+
+  [View All Clients →] → /admin/clients
+
+────────────────────────────────────────────────────────────────────────────────
+RECENT ACTIVITY FEED
+────────────────────────────────────────────────────────────────────────────────
+
+  Last 15 activity events across all my clients:
+    "Adebayo S. submitted a transfer request — GBP 85,000"
+    "Keiko T. logged in — 2 minutes ago · Lagos, Nigeria"
+    "New document lodged: Trust Deed Amendment (Adebayo S.)"
+  Link: [View Full Log →] → /admin/audit
+
+================================================================================
+2. CLIENT ACCOUNT CREATION (/admin/clients/new)
+================================================================================
+
+The RM creates every client account. Nothing about a client can come from
+the client themselves at this stage — the RM builds the full picture.
+
+────────────────────────────────────────────────────────────────────────────────
+MULTI-STEP CREATION FORM
+────────────────────────────────────────────────────────────────────────────────
+
+STEP 1 — IDENTITY
+──────────────────
+  Full legal name (required)
+  Display name (pre-filled, editable — e.g., "Adebayo S.")
+  Initials (auto-generated, editable — "AS")
+  Date of birth
+  Nationality (country select)
+  Domicile country (country select)
+  Phone number (optional)
+
+STEP 2 — ACCOUNT SETTINGS & HISTORICAL DATE
+─────────────────────────────────────────────
+  Account creation date:
+    Default: today
+    Override: [date picker — can be any past date]
+    Use case: client has been a ZPF client since 2015 but we are now
+              migrating them onto the portal. Set onboardedAt = 2015-06-01.
+    This date is what appears in the client portal as "Member since [date]"
+    and what the performance/analytics engine uses as the "Since Inception"
+    start point.
+    Note field: "Reason for backdating (internal only)" — logged in AuditLog.
+
+  Risk profile:    Conservative / Balanced / Growth / Aggressive
+  Mandate type:    Advisory / Discretionary / Execution Only
+  Mandate date:    [date picker] — when mandate was agreed (can be backdated)
+
+  KYC status:      Default: VERIFIED (due diligence done offline)
+  KYC verified date: [date picker] (can be backdated)
+  KYC expiry date: [date picker, optional]
+
+STEP 3 — RM DISPLAY INFORMATION
+─────────────────────────────────
+  What the client sees in their portal as their "Relationship Manager" card.
+  Default: auto-populate from this RM's own StaffProfile
+  Override option: "Use custom display" toggle → allows entry of different:
+    RM Display Name (e.g., "Dr. Markus von Steiner")
+    RM Title
+    RM Initials
+    RM Phone
+    RM Availability message (e.g., "Available — responds within 4 hours")
+    RM Next Call (date/time picker, optional)
+  Use case: senior partner shown to client while junior RM does the work.
+
+STEP 4 — CUSTODIAN DISPLAY
+────────────────────────────
+  What appears in the client's portfolio as the custodian line:
+    Custodian name (default: "ZPF AG — Primary Custody")
+    Custodian address (default: "Bahnhofstrasse 72, 8001 Zürich")
+  These are display fields — they don't affect backend logic.
+
+STEP 5 — CREDENTIALS PREVIEW
+──────────────────────────────
+  System generates and shows:
+    ClientID:        ZPF-XXXX-XXXX (auto-generated, unique, shown for the first time)
+    Initial Passphrase: [24-char random alphanumeric] (shown ONCE — cannot be retrieved)
+    TOTP Enrollment URL: auth.zpfinanz.ch/enroll?token=xxxxx (72hr expiry)
+
+  "Download Credential Sheet" button:
+    Generates a one-page PDF in-memory (never stored to DB or S3):
+      - Client name + ClientID
+      - Passphrase (clearly labelled "Change after first login")
+      - TOTP enrollment URL + QR code
+      - ZPF branding + watermark with client name
+    Admin prints and hands over physically or seals in envelope.
+
+  "I have securely noted these credentials" checkbox (required to proceed)
+
+STEP 6 — CONFIRM & CREATE
+───────────────────────────
+  Summary of all entered data
+  "Create Client Account" submit
+
+  On creation:
+    → ClientProfile, Portfolio, AssetClasses (empty) created
+    → TotpEnrollmentToken generated
+    → Welcome message auto-sent in client's RM thread:
+        "Welcome to ZPF Private Client Portal. Your account has been set up
+         and your portfolio will be available shortly. Please complete your
+         TOTP authenticator setup using the link provided."
+    → AuditLog: CLIENT_CREATED (includes backdated onboardedAt if applicable)
+
+================================================================================
+3. PORTFOLIO & ASSET MANAGEMENT
+================================================================================
+
+This is the RM's primary operational task after creating a client. All of a
+client's financial data — past and present — is entered by the RM.
+
+────────────────────────────────────────────────────────────────────────────────
+PORTFOLIO VIEW (/admin/clients/[clientId]/portfolio)
+────────────────────────────────────────────────────────────────────────────────
+
+  Layout: mirrors what the client sees (portfolio overview page) but with
+  admin overlays — every section has an [Edit] or [+ Add] control.
+
+  Shows:
+    Portfolio hero card (total AUM, quarterly change, unrealised gain)
+    Asset class cards (6): each with [Edit Display Settings] + [Add Transaction]
+    Allocation bar
+    Recent transactions (last 10)
+    [Force Recalculate P&L] button (triggers recalc job immediately)
+    Last calculated at: [timestamp]
+
+  [Edit Display Settings] on any asset class card:
+    → Modal to edit the card's display label, subline, color (cosmetic only)
+
+────────────────────────────────────────────────────────────────────────────────
+ASSET CLASS SETUP
+────────────────────────────────────────────────────────────────────────────────
+
+  Each client has 6 asset class slots (MONETARY, SECURITIES, PRECIOUS_METALS,
+  DIGITAL_ASSETS, REAL_ESTATE, DOCUMENT_VAULT).
+  All created empty on account creation — RM populates them.
+
+  Before entering transactions, RM creates the specific holdings within each
+  asset class. Holding creation can be done inline in the transaction form
+  or via a dedicated "Manage Holdings" view per asset class.
+
+  MONETARY HOLDINGS — add per currency account:
+    Currency (select)
+    Account type (Current Account / Notice Account / Fixed Term / Savings)
+    Masked account number (e.g., CH56 0483 •••• •••• 7800 0)
+    Interest rate (% p.a.)
+    Account opened date [backdatable date picker]
+    Maturity date (if fixed term)
+    Notice period (if notice account)
+
+  SECURITIES — add per position:
+    Ticker / ISIN
+    Security name
+    Security type (Equity / Bond / ETF / Fund / Structured Product)
+    Exchange
+    Currency
+    For bonds: coupon rate, maturity date
+
+  PRECIOUS METALS — add per holding/bar:
+    Metal type (Gold / Silver / Platinum / Palladium)
+    Weight (troy oz)
+    Bar description (e.g., "3 × 400oz Good Delivery Bars")
+    Vault location (text + optional vault ID)
+    Fineness (e.g., 999.9)
+    Bar reference(s)
+    Acquisition date [backdatable]
+    Insurance details (optional)
+
+  DIGITAL ASSETS — add per coin:
+    Ticker (BTC, ETH, etc.)
+    Name
+    Custody type / provider
+    Wallet reference (masked)
+
+  REAL ESTATE — add per property:
+    Property name
+    Address + country
+    Property type (Residential / Commercial / Land / Other)
+    Acquisition date [backdatable]
+    Acquisition cost (CHF)
+    Last valuation (CHF) + valuation date
+    Valuation status (Active / Pending)
+    Title document reference (links to vault document)
+    Encumbrances (text)
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSACTION ENTRY (/admin/clients/[clientId]/transactions — "Add Transaction")
+────────────────────────────────────────────────────────────────────────────────
+
+  The transaction form is the core data-entry surface. Every balance, cost
+  basis, and P&L figure the client sees is derived from transactions entered here.
+
+  FULLY BACKDATABLE:
+    Every transaction can be set to any past date. There is no "minimum date"
+    restriction. A client onboarded today might have transactions going back
+    to 2008. The RM enters the full history as known.
+    The system recalculates P&L from the earliest transaction forward.
+
+  FORM FIELDS:
+  ─────────────
+
+  Asset Class:        [select from client's 6 asset classes]
+
+  Specific Holding:   [select from holdings within that class]
+                      + "New Holding" option → inline holding creation form
+
+  Transaction Type:   [dropdown — options depend on selected asset class]
+    MONETARY:         Wire In / Wire Out / Interest Credit / Fee Debit / FX Conversion
+    SECURITIES:       Security Buy / Security Sell / Dividend / Coupon Payment
+    PRECIOUS METALS:  Metal Purchase / Metal Sale / Transfer In / Transfer Out
+    DIGITAL ASSETS:   Crypto Buy / Crypto Sell / Transfer In / Transfer Out
+    REAL ESTATE:      Property Acquisition / Property Sale / Rental Income
+    GENERIC:          Manual Adjustment
+
+  Direction:          [CREDIT or DEBIT — auto-set from type, overridable]
+
+  Transaction Date:   [date picker — any past date, no floor]
+    Hint text: "Use the actual date the transaction occurred, not today's date."
+    If date > 1 year ago: show subtle notice:
+      "This is a historical entry — backdating to [selected date]."
+
+  Quantity:           [number — troy oz, shares, BTC, etc. — shown if applicable]
+
+  Price at Date:      [number — price per unit in the asset's native currency]
+    [Look Up Historical Price] button:
+      For metals (XAU/XAG/XPT): queries PriceHistory table for selected date
+      For crypto (BTC/ETH): queries PriceHistory table for selected date
+      For FX: queries PriceHistory table for selected date
+      For securities: manual only (no free historical data API)
+      For real estate: manual only
+      Auto-fills the field — RM can accept or override.
+
+  FX Rate at Date:    [number, shown if non-CHF asset]
+    [Look Up Rate] button: queries PriceHistory for selected date
+    Auto-fills EUR/CHF, USD/CHF, GBP/CHF, etc.
+
+  Amount (Native):    [auto-calculated: quantity × priceAtDate]
+                      [overridable — unlock with warning]
+
+  Amount (CHF):       [auto-calculated: amountNative × fxRateAtDate]
+                      [overridable — unlock with warning]
+
+  Description:        [text — internal admin label]
+    Examples: "Gold purchase — 5oz, LBMA delivery, Zürich vault"
+              "Wire in from Standard Chartered Lagos — Q3 contribution"
+
+  Client Activity Label: [text — what the client sees in their activity feed]
+    Default: same as description
+    Can be different: admin might write "Portfolio contribution" instead of
+    the full SWIFT details.
+    Examples: "Inbound wire — CHF account · Verified & credited"
+              "Gold purchase — 5oz allocated"
+
+  Show in Client Activity: [checkbox, default: checked]
+    Uncheck for internal/adjustment entries not meant for client visibility.
+
+  Reference:          [optional — bank ref, SWIFT ref, trade ID, etc.]
+
+  Internal Notes:     [optional text — admin-only, never shown to client]
+
+  SAVE BEHAVIOUR:
+    → POST /api/admin/clients/[clientId]/transactions
+    → P&L recalculation triggered asynchronously (BullMQ)
+    → Dashboard shows "Recalculating portfolio…" spinner
+    → On completion: all computed values update
+    → AuditLog: TRANSACTION_ADDED
+
+  EDITING TRANSACTIONS:
+    → Any historical transaction can be edited (correcting data entry errors)
+    → Edit captures before/after snapshot in AuditLog: TRANSACTION_EDITED
+    → P&L recalculated after edit
+
+  DELETING TRANSACTIONS:
+    → Soft delete (deletedAt field, excluded from calculations)
+    → Requires confirmation: "This will affect the client's portfolio balance.
+       The transaction will remain in the audit log as deleted."
+    → AuditLog: TRANSACTION_DELETED
+
+  BULK IMPORT [SUGGESTION]:
+    For new clients being migrated with years of history, provide a CSV import:
+      - Template downloadable from the form
+      - Columns: date, assetClass, holdingRef, type, direction, quantity,
+                 priceAtDate, fxRateAtDate, amountNative, amountCHF,
+                 description, clientLabel, reference
+      - Server validates each row before committing
+      - On validation errors: show row-by-row error list, do not commit partial
+      - On success: commit all rows, trigger one recalculation job
+    This makes migrating a client with 10 years of transaction history
+    practical without manually entering 200+ rows.
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSACTION LIST VIEW (/admin/clients/[clientId]/transactions)
+────────────────────────────────────────────────────────────────────────────────
+
+  Same visual style as client's transactions page but with admin controls.
+
+  Filters: Asset Class · Transaction Type · Direction · Date Range
+  Search: by description, reference, or amount
+
+  Each row shows:
+    Date (actual transaction date, not entry date)
+    Type badge
+    Description (admin label)
+    Amount (native + CHF)
+    P&L impact indicator (small green/red delta)
+    Entered by (admin name)
+    Entry date (when it was entered — different from transaction date)
+    [Edit] [Delete] actions
+
+  Summary strip:
+    Total credits | Total debits | Net flow | Earliest transaction date
+
+  [+ Add Transaction] button always visible top-right.
+
+================================================================================
+4. CLIENT PROFILE MANAGEMENT
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT PROFILE (/admin/clients/[clientId])
+────────────────────────────────────────────────────────────────────────────────
+
+  IDENTITY PANEL                          [Edit]
+    Full name, display name, initials
+    Date of birth, nationality, domicile
+    Phone number
+    ClientID (read-only)
+    Onboarded date (read-only after creation — cannot be changed post-creation)
+
+  ACCOUNT PANEL                           [Edit per field]
+    KYC Status + verified date + expiry   [Edit: change status, update dates]
+    Risk profile                          [Edit]
+    Mandate type + date                   [Edit]
+    Account status                        [Lock / Unlock button]
+    Must-change-passphrase flag           [Reset button — forces client to change]
+
+  RM DISPLAY PANEL                        [Edit]
+    Shows rmDisplayName, title, phone, availability
+    "Using custom override" or "Using RM StaffProfile (default)" indicator
+    [Edit RM Display] → modal to change per-client override fields
+
+  CUSTODIAN DISPLAY PANEL                 [Edit]
+    Custodian name, address
+
+  TOTP & SECURITY                         [Action buttons]
+    TOTP status: Enrolled / Not Enrolled
+    [Generate New TOTP Enrollment Link]
+      → Creates new TotpEnrollmentToken
+      → Shows URL for RM to deliver to client
+      → Download option (credential sheet PDF)
+    Failed TOTP attempts counter          [Reset Counter]
+    Active sessions count                 [View & Terminate]
+
+  BENEFICIARIES PANEL
+    List: nickname, name, IBAN (masked), country, verified status
+    [Verify] / [Reject] buttons on pending beneficiaries
+    [Deactivate] on active ones
+    Cannot delete — only deactivate (compliance trail)
+
+  QUICK STATS
+    Portfolio total AUM (link to /portfolio)
+    Last login: time + IP + city
+    Open message threads count
+    Pending transfers count
+
+  SUB-NAVIGATION:
+    Portfolio | Transactions | Documents | KYC | Transfers | Messages | Activity
+
+────────────────────────────────────────────────────────────────────────────────
+KYC MANAGEMENT (/admin/clients/[clientId]/kyc)
+────────────────────────────────────────────────────────────────────────────────
+
+  KYC Status selector:
+    PENDING / VERIFIED / EXPIRED / UNDER_REVIEW
+    Change triggers AuditLog: KYC_STATUS_CHANGED
+
+  Dates:
+    KYC verified date [date picker — backdatable]
+    KYC expiry date [date picker]
+    "Notify me 30 days before expiry" toggle (creates a scheduled alert)
+
+  KYC Documents:
+    Filtered view from vault: DocCategory = KYC_AML
+    [Upload KYC Document] → lodge to vault with KYC category
+
+  Compliance fields (admin-only, never shown to client):
+    PEP screening status: Not PEP / PEP (with notes field)
+    AML notes [textarea]
+    Source of wealth notes [textarea]
+    Enhanced Due Diligence flag [checkbox]
+    EDD notes [textarea]
+
+  KYC History:
+    Read-only log of all KYC status changes (from AuditLog):
+      Date | Changed by | Old status → New status | Notes
+
+================================================================================
+5. TRANSFER APPROVALS (/admin/transfers)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSFER LIST
+────────────────────────────────────────────────────────────────────────────────
+
+  Tabs: Pending (default) / Under Review / Approved / Executed / Rejected / All
+  Filter by client (dropdown — my clients only)
+
+  Each transfer card shows:
+    Client name + ClientID
+    Amount: [currency] [amount] (≈ CHF equivalent)
+    Beneficiary: full name | country | masked IBAN
+    Bank: bank name | BIC
+    Reference
+    Category badge (Personal / Investment / Operating / etc.)
+    Client notes
+    Submitted date/time
+    Attachments
+
+  Action buttons:
+    [Begin Review]    → status: UNDER_REVIEW
+    [Approve]         → if ≤ threshold: status: APPROVED, client notified
+                        if > threshold: status: AWAITING_COUNTER (Major Admin notified)
+                        [SUGGESTION]: Show CHF equivalent prominently to avoid
+                        mistakes on FX transfers. E.g., "GBP 85,000 ≈ CHF 97,240"
+    [Reject]          → requires rejection reason [textarea]
+                        Client notified in-portal + reason shown
+    [Request Clarification] → opens message thread with client (RM channel)
+    [Mark Executed]   → enter settlement reference + value date
+                        → creates Activity on client account
+                        → client notified: "Your transfer has been executed"
+
+  After APPROVED (waiting for execution):
+    [Mark Executed] is the only active button
+    Shows: "Approved [date] · Awaiting execution"
+
+  BENEFICIARY VERIFICATION (within transfer flow):
+    If a client proposed a new beneficiary (isVerified = false),
+    the transfer using it will show a "UNVERIFIED BENEFICIARY" warning banner.
+    RM must verify the beneficiary before they can approve the transfer.
+    [Verify Beneficiary] button opens inline:
+      Shows: full name, IBAN, BIC, bank, country
+      RM confirms they've verified via agreed process (AML screening, etc.)
+      [Mark Verified] → isVerified = true, AuditLog: BENEFICIARY_VERIFIED
+
+================================================================================
+6. MESSAGING (/admin/messages)
+================================================================================
+
+This is one of the most important sections. The RM is the primary contact
+for every client, but multiple ZPF departments can also message clients.
+
+────────────────────────────────────────────────────────────────────────────────
+RM MESSAGE INBOX (/admin/messages)
+────────────────────────────────────────────────────────────────────────────────
+
+  Layout: Split panel (thread list left, conversation right)
+
+  Thread list shows:
+    Filter: All / Unread / Open / Resolved
+    Search by client name
+
+    Each row:
+      Client display name + ClientID
+      Thread subject + category label badge
+      Last message preview + timestamp
+      Unread dot if unread
+
+  The RM inbox shows threads where:
+    category = 'rm' OR category = 'advisory'
+    AND assignedAdminId = this RM's userId
+
+  Department threads (compliance, operations, custody, tax, legal) are managed
+  by their respective department portals — not by the RM inbox.
+  The RM can still VIEW all their client's threads (read-only) from the
+  client profile → messages sub-tab. But they compose only in their own channel.
+
+────────────────────────────────────────────────────────────────────────────────
+COMPOSING A MESSAGE TO CLIENT
+────────────────────────────────────────────────────────────────────────────────
+
+  From: RM inbox → [+ New Message] or from client profile → [Send Message]
+
+  COMPOSE FORM:
+    Client:          [pre-filled if coming from client profile]
+    Category:        rm (default for RM messages) / advisory
+    Subject:         [text input]
+    Message body:    Rich text editor (Tiptap)
+                     Supports: bold, italic, lists, links, horizontal rule
+    Attachments:     Upload up to 3 files (stored in S3)
+                     Max 10MB per file, allowed: PDF, DOCX, XLSX, PNG, JPG
+    Internal note:   [toggle] — if ON, message is staff-only (not shown to client)
+                     Used for internal memos, handover notes, etc.
+
+  EMAIL DELIVERY OPTION:
+    □ Also send email notification to client
+      When checked:
+        - System sends email via Resend to client's email address on file
+          (StaffProfile.notificationEmail or ClientProfile.emailAddress)
+          [SUGGESTION]: add emailAddress to ClientProfile — a verified email
+          field the RM enters during onboarding for email delivery purposes.
+        - Email content:
+            From:    noreply@zpfinanz.ch (or department-specific alias)
+            To:      [client email]
+            Subject: "New message from ZPF — [thread subject]"
+            Body:    Plain text summary:
+                       "Dear [Display Name],
+                        You have a new message from [RM Name] at
+                        ZPF Privat Finanz AG regarding: [Subject].
+                        Please log in to your portal to read and respond.
+                        [Portal URL]
+                        This message was sent securely via the ZPF client portal.
+                        Do not reply to this email."
+            IMPORTANT: Never include the actual message content in the email.
+                       Email is notification-only — full content only in portal.
+        - emailSentAt timestamp stored on the Message record
+        - Delivery status tracked (sent / bounced via Resend webhooks)
+      When unchecked:
+        - In-portal notification only
+        - Client sees unread badge on their messages page
+
+  [SUGGESTION] EMAIL ADDRESS ON CLIENT PROFILE:
+    Add to ClientProfile:
+      emailAddress          String?   — client's email, entered by RM
+      emailVerified         Boolean   — admin marks as verified (cannot self-verify)
+      emailVerifiedAt       DateTime?
+    This field is used ONLY for outbound notifications from bank to client.
+    Client never logs in via email — email is one-way notification only.
+    RM enters this during onboarding or later from client profile [Edit].
+
+────────────────────────────────────────────────────────────────────────────────
+THREAD VIEW (conversation with client)
+────────────────────────────────────────────────────────────────────────────────
+
+  Message bubbles (client = right gold, RM = left grey)
+  Internal notes shown with distinct style: amber dashed border + "Internal" label
+  Attachments shown inline as downloadable file pills
+
+  Thread header actions:
+    [Resolve Thread]         → status: RESOLVED, removed from active inbox
+    [Archive]                → status: ARCHIVED
+    [Escalate to Major Admin] → flags thread, Major Admin notified
+    [Resend Email Notification] → re-sends the "you have a message" email
+                                   (useful if client missed the first one)
+
+  Reply compose area:
+    Same rich text editor
+    "Internal note" toggle
+    File attachment
+    "Also send email" checkbox (same as new message compose)
+    [Send Reply]
+
+================================================================================
+7. DEPARTMENT PORTAL SYSTEM
+================================================================================
+
+This is a major architectural feature. ZPF is not just one person (the RM)
+communicating with clients. Multiple internal departments correspond with
+clients independently. Each department:
+  - Has its own portal login (separate from RM admin login)
+  - Has its own inbox of client threads
+  - Can initiate messages to clients
+  - Can reply to client replies
+  - Messages appear in the client's portal under the correct category badge
+  - Can optionally send email notifications to clients
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT DEFINITIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  Based on the existing message categories in the system:
+
+  ID             Label                    Initials  Color (from mock data)
+  ─────────────────────────────────────────────────────────────────────────
+  rm             RM Correspondence        varies    Gold  (#C4A44A)
+  advisory       Advisory / Research      varies    Purple (#7F77DD)
+  compliance     Compliance               ZC        Red-pink (#DD7777)
+  operations     Operations               ZO        Blue (#378ADD)
+  custody        Custody & Vault          ZV        Green (#1D9E75)
+  tax            [SUGGESTION] Tax Desk    ZT        Amber (#d97706)
+  legal          [SUGGESTION] Legal       ZL        Mist (#8A9AB0)
+
+  Each department has:
+    - A dedicated DepartmentAccount (separate from User model — see schema below)
+    - A portal at /dept/[deptId]/... (separate route tree from /admin)
+    - One or more staff members who can log in and compose/reply
+    - Department-level TOTP and passphrase auth (same 3-step flow)
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT PORTAL ROUTES
+────────────────────────────────────────────────────────────────────────────────
+
+  /dept/login                         — Department login (shared, dept selected on step 1)
+  /dept/[deptId]/overview             — Department inbox overview
+  /dept/[deptId]/messages             — All threads for this department
+  /dept/[deptId]/messages/new         — Compose new thread to a client
+  /dept/[deptId]/messages/[threadId]  — Thread view + reply
+
+  Route access: departmentId must match the logged-in department account.
+  A compliance staff member cannot see custody or operations threads.
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT PORTAL — LOGIN
+────────────────────────────────────────────────────────────────────────────────
+
+  /dept/login
+  Same 3-step flow as admin login.
+  Step 1: Department staff ID (format: ZPF-DEPT-XXXX)
+  Step 2: Passphrase
+  Step 3: TOTP code
+  On success: redirected to /dept/[their deptId]/overview
+
+  Department accounts are created by Super Admin via /admin/staff management.
+  A department staff member has role = DEPARTMENT_STAFF (new role enum value)
+  and a departmentId field linking them to their department.
+
+  [SUGGESTION — SCHEMA ADDITION]:
+    enum Role {
+      CLIENT
+      ADMIN
+      MAJOR_ADMIN
+      SUPER_ADMIN
+      DEPARTMENT_STAFF     ← new
+    }
+
+    model DepartmentProfile {
+      id              String  @id @default(cuid())
+      userId          String  @unique
+      user            User    @relation(...)
+      departmentId    String  — "compliance", "operations", "custody", etc.
+      departmentLabel String  — "ZPF Compliance Team"
+      displayInitials String  — "ZC"
+      colorHex        String  — "#DD7777"
+    }
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT PORTAL — OVERVIEW (/dept/[deptId]/overview)
+────────────────────────────────────────────────────────────────────────────────
+
+  Simple dashboard:
+    Unread threads: count + list
+    Recent activity: last 10 messages sent/received
+    [+ New Message to Client] button → compose
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT PORTAL — MESSAGE INBOX (/dept/[deptId]/messages)
+────────────────────────────────────────────────────────────────────────────────
+
+  Filtered to threads where category = this department's ID.
+  Same split-panel layout as RM inbox.
+
+  Thread list:
+    Client name (looked up from ClientProfile)
+    Thread subject + unread dot
+    Last message preview + date
+
+  Thread view:
+    Full message history
+    Reply compose area (Tiptap, attachments, email notification option)
+    [Resolve] [Archive] thread actions
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT PORTAL — COMPOSE (/dept/[deptId]/messages/new)
+────────────────────────────────────────────────────────────────────────────────
+
+  To (Client):      [search all clients by name or ClientID]
+                    Note: department can message ANY client — no ownership restriction
+                    (Compliance, Operations, etc. are bank-wide)
+  Category:         [auto-set to this department's category ID — read-only]
+  Subject:          [text input]
+  Message:          Rich text editor (Tiptap)
+  Attachments:      up to 3 files, max 10MB each
+  Email notification: [checkbox] — same email delivery as RM messages
+
+  On send:
+    → Creates MessageThread (if new subject) or new Message (if continuing)
+    → category set to department ID
+    → assignedAdminId = null for department threads (not owned by RM)
+    → In-portal: client sees new message in their Secure Messages inbox
+      under the correct category badge
+    → If email checkbox checked: sends email notification to client
+
+────────────────────────────────────────────────────────────────────────────────
+HOW THIS APPEARS TO THE CLIENT
+────────────────────────────────────────────────────────────────────────────────
+
+  Client's messages page already supports categories (mock data confirmed):
+    rm           → "RM Correspondence" (gold badge)
+    advisory     → "Advisory" (purple badge)
+    compliance   → "Compliance" (red-pink badge)
+    operations   → "Operations" (blue badge)
+    custody      → "Custody & Vault" (green badge)
+    tax          → "Tax Desk" (amber badge)      [SUGGESTION]
+    legal        → "Legal" (mist badge)          [SUGGESTION]
+
+  Each thread shows the department's display name as the participant:
+    "ZPF Compliance Team" / "ZPF Operations Desk" / "ZPF Custody & Vault"
+  with the department's initials in the avatar circle.
+
+  Client can REPLY to department messages in the portal.
+  The reply routes back to that department's inbox — NOT to the RM.
+  The RM can still see it from the client profile → messages tab (read-only view).
+
+  [SUGGESTION] CROSS-DEPARTMENT VISIBILITY:
+    RM (Admin) should have read-only visibility of all their client's threads,
+    regardless of department. This way the RM is always informed if compliance
+    contacted the client. They just can't compose in those channels.
+
+────────────────────────────────────────────────────────────────────────────────
+DEPARTMENT MESSAGE — EMAIL DELIVERY DETAILS
+────────────────────────────────────────────────────────────────────────────────
+
+  From address per department (Resend custom domains):
+    RM:          noreply@zpfinanz.ch (or rm@zpfinanz.ch)
+    Compliance:  compliance@zpfinanz.ch
+    Operations:  operations@zpfinanz.ch
+    Custody:     custody@zpfinanz.ch
+    Tax:         tax@zpfinanz.ch           [SUGGESTION]
+    Legal:       legal@zpfinanz.ch         [SUGGESTION]
+
+  Subject line format:
+    "ZPF [Department Label] — [Thread Subject]"
+    e.g., "ZPF Compliance — Annual Client Declaration · Action Required by 30 Apr 2026"
+
+  Body format (same as RM — notification only, no message content):
+    "Dear [Display Name],
+     You have received a message from the ZPF [Department Label] regarding:
+     [Thread Subject].
+     Please log in to your secure portal to read and respond:
+     [Portal URL]
+     Reference: [Thread ID]
+     This is an automated notification. Do not reply to this email."
+
+  Delivery tracked via Resend webhooks → Message.emailDeliveryStatus field.
+
+================================================================================
+8. DOCUMENT MANAGEMENT (/admin/clients/[clientId]/documents)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+DOCUMENT LIST (admin view)
+────────────────────────────────────────────────────────────────────────────────
+
+  Same list as client sees, plus admin-only columns and actions:
+
+  Columns:
+    Icon | Name | Category | Status | Date Lodged | Storage | Review Due | Actions
+
+  Admin Actions per document:
+    [Seal]         → client can no longer download; shown as locked with "Sealed" badge
+    [Unseal]       → restores client download access
+    [Set Review Due Date] → date picker; creates alert for RM at 30-day warning
+    [Mark Review Complete] → enter review notes, clears overdue status
+    [Edit Metadata] → change category, jurisdiction, description, notes
+    [Upload New Version] → replaces current with new S3 upload (keeps old in audit)
+    [Lodge Document] → upload on behalf of client (RM lodges docs to vault)
+    [Soft Delete]  → requires reason; document retained in audit log, hidden from client
+
+  [+ Lodge Document] button:
+    File upload (presigned S3):
+      Category (select: corporate / property / succession / legal / financial /
+                        kyc_aml / advisory / operations)
+      Name
+      Description
+      Jurisdiction
+      Reference number (auto-generated or custom)
+      Storage type (physical / digital / both)
+      Related asset (optional link to AssetClass or specific holding)
+      Review due date (optional)
+      Notes (internal)
+    After upload:
+      → VaultDocument created (status: ACTIVE)
+      → Client notified: "A new document has been lodged in your vault"
+      → AuditLog: DOCUMENT_UPLOADED
+
+  SEALED DOCUMENTS:
+    Sealed docs are visible in the client's vault list (they can see the name/meta)
+    but have no download button — replaced with a lock icon and "Sealed" badge.
+    Use cases: wills, sealed envelopes, legally restricted documents.
+    Unsealing requires the same admin (or higher) to explicitly unseal.
+
+================================================================================
+9. STATEMENT GENERATION (/admin/clients/[clientId]/statements)
+================================================================================
+
+  [Generate Statement] button:
+
+  Form:
+    Period type:    Quarterly / Annual / Custom
+    From date:      [date picker]
+    To date:        [date picker]
+    Statement type: Portfolio Summary / Transaction Detail / Asset Class Breakdown /
+                    Full Combined Statement
+    Include sections (checkboxes):
+      □ Portfolio overview + allocation
+      □ Performance vs benchmark
+      □ All transactions (by asset class)
+      □ Monetary holdings detail
+      □ Securities holdings detail
+      □ Metals holdings + vault confirmation
+      □ Digital assets detail
+      □ Real estate valuation summary
+      □ Document vault summary
+    Include cover letter: [toggle]
+      Cover letter body: [Tiptap editor — RM writes personalised note]
+      This text appears on a cover page before the statement data.
+    Send to client:  [checkbox] → notify client in-portal + optional email
+
+  On generate:
+    → BullMQ job: renders PDF via @react-pdf/renderer
+    → Stored in S3 under /statements/[clientId]/
+    → Statement record created in DB
+    → Client notified if "send to client" was checked
+    → AuditLog: STATEMENT_GENERATED
+
+================================================================================
+10. ADMIN ACTIVITY LOG (/admin/audit)
+================================================================================
+
+  RM sees only their own actions — no other admin's data.
+
+  Same table format as other roles but tightly scoped:
+    WHERE userId = this RM's userId
+    OR (relatedClientId IN [their client ids] AND userId = this RM's userId)
+
+  Filters: Date range · Action type · Client
+  Columns: Timestamp · Action · Client · Entity · IP · Notes
+  Sort: Timestamp DESC by default
+  Export: [Export to CSV]
+
+  Actions logged for RM:
+    CLIENT_CREATED, KYC_STATUS_CHANGED, RISK_PROFILE_CHANGED
+    TRANSACTION_ADDED, TRANSACTION_EDITED, TRANSACTION_DELETED
+    TRANSFER_APPROVED, TRANSFER_REJECTED, TRANSFER_EXECUTED
+    DOCUMENT_UPLOADED, DOCUMENT_SEALED, DOCUMENT_UNSEALED
+    MESSAGE_SENT, THREAD_RESOLVED
+    BENEFICIARY_VERIFIED
+    STATEMENT_GENERATED
+    TOTP_ENROLLMENT_GENERATED
+    LOGIN_SUCCESS, LOGIN_FAILED, LOGOUT
+
+================================================================================
+11. RM SETTINGS (/admin/settings)
+================================================================================
+
+  PROFILE
+  ────────
+  Display name, title, department, initials   [Editable]
+  These directly affect what the client sees in their RM card
+  (unless a per-client override is set).
+
+  AVAILABILITY STATUS
+  ────────────────────
+  Live status toggle (shown in sidebar and client's RM card):
+    ● Available
+    ● In Meeting
+    ● Away
+    ● Out of Office
+  Availability note (free text — e.g., "Back Monday 7 April")
+  This updates StaffProfile.availabilityStatus in real time.
+  The client's portal RM card reflects this live.
+
+  NOTIFICATION EMAIL
+  ───────────────────
+  Notification email address (optional)
+  [Verify Email] → sends confirmation link
+  Email notification toggles:
+    □ Email on new client message
+    □ Email on transfer request submitted
+    □ Email on unusual client login (new city/country)
+
+  SECURITY
+  ─────────
+  Change passphrase (requires current passphrase + live TOTP)
+  View active sessions + terminate individual sessions
+  Login history (last 10): date, IP, city, device
+
+================================================================================
+12. ADDITIONS IDENTIFIED FROM THE CURRENT PROJECT
+================================================================================
+
+The following are gaps or additions identified by reviewing the existing
+app/ pages, mock data, and overall architecture:
+
+────────────────────────────────────────────────────────────────────────────────
+A. CLIENT EMAIL ADDRESS FIELD
+────────────────────────────────────────────────────────────────────────────────
+  Currently missing from ClientProfile schema and mock data.
+  Required for email delivery of messages and notifications.
+  Should be:
+    emailAddress        String?
+    emailVerified       Boolean  @default(false)
+    emailVerifiedAt     DateTime?
+  RM enters it during onboarding (Step 2) or from client profile [Edit].
+  Never used for login — notification-only.
+
+────────────────────────────────────────────────────────────────────────────────
+B. TRANSACTION HISTORY PAGE — ADD "ENTERED BY" INFO
+────────────────────────────────────────────────────────────────────────────────
+  The existing /dashboard/transactions page (client view) shows transactions
+  but has no admin metadata. The admin view at
+  /admin/clients/[clientId]/transactions should add:
+    - "Entered by" column (RM name who created the entry)
+    - "Entry date" column (when it was entered, vs. the transaction date)
+    - "Internal notes" column (admin-only, hidden from client view)
+  The mock Transaction type in lib/mock-data.ts needs to be extended to
+  include: createdByAdminName, entryDate, internalNotes (for admin view).
+
+────────────────────────────────────────────────────────────────────────────────
+C. BACKDATED ACCOUNT CREATION — MOCK DATA
+────────────────────────────────────────────────────────────────────────────────
+  The current mockUser.onboardedAt = '12 March 2022' is a good example.
+  When wiring to real backend, the admin creation form must send the
+  backdated onboardedAt, and all performance/analytics calculations must
+  use this date as "inception date" — not the account creation timestamp.
+
+────────────────────────────────────────────────────────────────────────────────
+D. MESSAGES — DEPARTMENT SENDER DISTINCTION IN MOCK DATA
+────────────────────────────────────────────────────────────────────────────────
+  lib/mock-data.ts has MessageSender = 'client' | 'rm' | 'bank'
+  'bank' covers all department messages. This is fine for the mock.
+  In the real system, sender should distinguish which department:
+    sender: 'client' | 'rm' | 'compliance' | 'operations' | 'custody' | 'advisory' | 'tax' | 'legal'
+  The message bubble rendering should show the department's initials avatar
+  (ZC, ZO, ZV, etc.) when sender is a department — not a generic "bank" avatar.
+
+────────────────────────────────────────────────────────────────────────────────
+E. RM AVAILABILITY — LIVE IN CLIENT PORTAL
+────────────────────────────────────────────────────────────────────────────────
+  mockRM.availability = 'Available — responds within 4 hours'
+  This is currently static mock data. In the real system:
+    - RM sets their availability in /admin/settings (Section 11 above)
+    - StaffProfile.availabilityStatus + availabilityNote stored in DB
+    - Client portal RM card fetches this live from the API
+    - RM changes availability → client sees it next time they load the page
+  [SUGGESTION]: Show a "last seen" timestamp on the RM card too.
+
+────────────────────────────────────────────────────────────────────────────────
+F. BENEFICIARY VERIFICATION FLOW — MISSING FROM CURRENT MOCK
+────────────────────────────────────────────────────────────────────────────────
+  The existing /dashboard/beneficiaries page shows beneficiaries but has
+  no mock data for the "proposed / pending verification" state.
+  The admin panel must have a clear beneficiary verification flow:
+    - Pending beneficiaries surface in RM overview alerts
+    - [Verify] / [Reject] inline actions per beneficiary
+    - Cannot be used in transfers until verified
+  Mock data should include at least one beneficiary with isVerified = false.
+
+────────────────────────────────────────────────────────────────────────────────
+G. TRUSTEES PAGE — CURRENTLY IN APP STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+  app/dashboard/trustees/page.tsx exists in the project but is not in the
+  production spec or the sidebar navigation (neither client sidebar nor admin).
+  This page needs to be specced:
+    - Who are trustees? Named individuals on trust deeds (linked to vault docs)?
+    - Or third-party account holders who can view but not control?
+    - [SUGGESTION]: A "Trustee Access" feature — a read-only secondary login
+      for named executors or trustees to view limited portfolio data.
+      This would require a TRUSTEE role and a stripped-down portal view.
+    Resolve this before building out — current page is likely placeholder.
+
+────────────────────────────────────────────────────────────────────────────────
+H. NOTIFICATIONS PAGE — CURRENTLY IN APP STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+  app/dashboard/notifications/page.tsx exists. Need to confirm:
+    - Is this a dedicated page or is it the topbar dropdown?
+    - Full notification history page makes sense (client can scroll back)
+    - Each notification row: icon, text, date, read/unread, [Mark Read] action
+    - Types shown to client: new message, transfer update, statement ready,
+      document lodged, KYC reminder, system maintenance notice
+  The spec in Section 13 covers the notification events — this page
+  renders the Notification records for the logged-in client.
+
+────────────────────────────────────────────────────────────────────────────────
+I. CSV EXPORT ON TRANSACTIONS PAGE
+────────────────────────────────────────────────────────────────────────────────
+  The client transactions page already has an "Export CSV" button in the UI.
+  This needs to be wired to a real endpoint:
+    GET /api/transactions/export?format=csv
+    Returns: CSV with all transactions for the client
+    Columns: Date, Type, Asset Class, Description, Reference, Amount, Currency, CHF Equivalent
+  The button is already rendered in the component — needs API hookup.
+
+================================================================================
+END OF ADMIN (RM) PANEL SPECIFICATION
+================================================================================

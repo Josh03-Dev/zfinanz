@@ -1,0 +1,706 @@
+================================================================================
+  ZÜRICHBERG PRIVAT FINANZ AG — MAJOR ADMIN PANEL
+  STRUCTURE SPECIFICATION
+  Prepared for: Internal Engineering Reference
+  Version: 1.0 | Date: April 2026
+================================================================================
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The Major Admin sits between Super Admin and the Admins (Relationship Managers)
+who own client accounts. Typically a senior manager, COO, or department head.
+
+Major Admin's primary responsibilities:
+  - Oversee and supervise all Admins (RMs) assigned under them
+  - Counter-approve large transfers that exceed the Admin approval threshold
+  - Create new Admin accounts within their team
+  - Intervene in client management if an RM is unavailable
+  - Monitor team activity, AUM, and performance across their tree
+
+DATA SCOPE:
+  Every piece of data the Major Admin sees is scoped to their tree:
+    Their tree = every Admin whose parentAdminId = this Major Admin's userId,
+                 plus every client whose ownerAdminId is one of those Admins.
+  They cannot see clients, admins, or activity outside this tree.
+  Only Super Admin can expand that scope.
+
+Route prefix: /admin (shared with all roles)
+Auth: same 3-step login at /admin/login
+Role check: role === MAJOR_ADMIN
+
+The Major Admin panel is a scoped version of the Super Admin panel.
+Same pages, same components — but every DB query is filtered to their tree.
+
+NOTE ON ADMIN = RM:
+  Standard Admins are the Relationship Managers (RMs) for their clients.
+  The client's portal shows RM display fields (name, title, availability) which
+  auto-populate from the owning Admin's StaffProfile, with optional overrides
+  set per-client in ClientProfile.rmDisplay* fields.
+  Major Admin supervises these RMs and sees everything they do.
+
+================================================================================
+ROUTE MAP
+================================================================================
+
+  /admin/overview                         — Dashboard (scoped to tree)
+  /admin/clients                          — All clients under their RMs
+  /admin/clients/[clientId]               — Client profile
+  /admin/clients/[clientId]/portfolio     — Client portfolio (view + edit)
+  /admin/clients/[clientId]/transactions  — Transaction history + add/edit
+  /admin/clients/[clientId]/documents     — Document vault
+  /admin/clients/[clientId]/kyc           — KYC management
+  /admin/clients/[clientId]/transfers     — Client's transfer requests
+  /admin/clients/[clientId]/messages      — Client's message threads
+  /admin/clients/[clientId]/activity      — Client activity log
+  /admin/transfers                        — All transfers across their RMs
+  /admin/messages                         — All message threads across their RMs
+  /admin/staff                            — Admins (RMs) under them
+  /admin/staff/new                        — Create new Admin/RM account
+  /admin/staff/[staffId]                  — View/edit RM profile
+  /admin/audit                            — Audit log (their tree only)
+
+  NOT accessible to Major Admin:
+    /admin/config                         — Super Admin only
+    /admin/staff (Major Admins tab)       — Cannot see or create Major Admins
+
+================================================================================
+SIDEBAR NAVIGATION (Major Admin view)
+================================================================================
+
+  Top section:
+  ─────────────
+  Overview          /admin/overview
+  Clients           /admin/clients
+  Transfers         /admin/transfers     [badge: pending + counter-approval count]
+  Messages          /admin/messages      [badge: unread count]
+
+  Team section:
+  ──────────────
+  My Team           /admin/staff
+  Activity Log      /admin/audit
+
+  Bottom:
+  ────────
+  [ZPF Logo / Wordmark]
+  Admin display name + role badge (MAJOR ADMIN)
+  Logout
+
+================================================================================
+1. OVERVIEW DASHBOARD (/admin/overview)
+================================================================================
+
+All data scoped to this Major Admin's tree (their RMs + their clients).
+
+────────────────────────────────────────────────────────────────────────────────
+TOP STATS STRIP (6 cards)
+────────────────────────────────────────────────────────────────────────────────
+
+  Card 1: Total AUM (Tree)
+    Value:      Sum of Portfolio.totalValueChf for all clients under their RMs
+    Sub:        "Across [N] client accounts · [N] RMs"
+    Trend:      +/- % vs. last quarter (from PortfolioSnapshot comparison)
+    Color:      Gold accent
+
+  Card 2: Total Clients
+    Value:      Count of ClientProfiles where ownerAdminId is in their RM tree
+    Sub:        "[N] fully active · [N] locked · [N] pending TOTP"
+    Click:      → /admin/clients
+
+  Card 3: Counter-Approval Queue
+    Value:      Count of TransferRequests with status = AWAITING_COUNTER
+                (in their tree)
+    Label:      "Awaiting Your Approval"
+    Color:      Red if count > 0, mist if 0
+    Sub:        "Large transfers requiring counter-approval"
+    Click:      → /admin/transfers?tab=awaiting-counter
+    Priority:   This card is the most action-critical item on the dashboard.
+                If count > 0, show a pulsing gold border on this card.
+
+  Card 4: Pending Transfers
+    Value:      Count of PENDING_REVIEW + UNDER_REVIEW transfers (tree)
+    Sub:        "Across all RMs"
+    Color:      Amber if count > 0
+    Click:      → /admin/transfers?tab=pending
+
+  Card 5: Unread Messages
+    Value:      Count of unread MessageThreads across all RMs' clients
+    Sub:        "Across [N] open threads"
+    Click:      → /admin/messages?filter=unread
+
+  Card 6: Team
+    Value:      Count of active Admins under this Major Admin
+    Sub:        "[N] active RMs · [N] inactive"
+    Click:      → /admin/staff
+
+────────────────────────────────────────────────────────────────────────────────
+AUM TREND CHART
+────────────────────────────────────────────────────────────────────────────────
+
+  Type:         recharts LineChart
+  Data:         Monthly total AUM summed across their tree, last 12 months
+                Sourced from PortfolioSnapshot records for all their clients
+  X-axis:       Month labels
+  Y-axis:       CHF values (K/M formatted)
+  Tooltip:      "CHF [value] · [month] [year]"
+
+────────────────────────────────────────────────────────────────────────────────
+MY TEAM TABLE (RM Performance)
+────────────────────────────────────────────────────────────────────────────────
+
+  Lists all active Admins (RMs) under this Major Admin.
+
+  Columns:
+    Name            — StaffProfile.displayName + title below
+    Clients         — count of clients they own
+    AUM             — sum of their clients' portfolios (CHF)
+    Pending Transfers — count of PENDING_REVIEW transfers from their clients
+    Unread Messages — count of unread threads from their clients
+    Last Active     — RM's lastLoginAt (relative time, full date on hover)
+    KYC Alerts      — count of clients with KYC expiring in next 30 days
+    Actions         — [View Activity] [View Clients] [Message RM (internal)]
+
+  [View Activity] → /admin/audit?adminId=[rmId]  (filtered to this RM)
+  [View Clients]  → /admin/clients?assignedAdmin=[rmId]
+
+  Bottom row:     Team totals (AUM sum, total clients, total pending, etc.)
+
+────────────────────────────────────────────────────────────────────────────────
+COUNTER-APPROVAL QUEUE (if any pending)
+────────────────────────────────────────────────────────────────────────────────
+
+  If there are any AWAITING_COUNTER transfers, show a dedicated section
+  directly on the overview — no need to navigate to Transfers first.
+
+  Section header: "Transfers Awaiting Your Approval"
+    (with count badge and gold accent border)
+
+  Each item shows:
+    Client name + ClientID
+    Amount (CHF + native currency)
+    Beneficiary name + country
+    Submitted date
+    RM who reviewed and escalated
+    [Review & Decide] button → expands inline or navigates to full transfer view
+
+  Link: [View all in Transfers →] → /admin/transfers?tab=awaiting-counter
+
+────────────────────────────────────────────────────────────────────────────────
+RECENT TEAM ACTIVITY FEED
+────────────────────────────────────────────────────────────────────────────────
+
+  Last 20 AuditLog entries from any RM in this Major Admin's tree.
+  Same format as Super Admin's activity feed but scoped.
+
+  Examples:
+    "RM Lena Koch added a transaction for Adebayo S. (CHF 142,000 — gold purchase)"
+    "RM Thomas Baer approved a transfer for Keiko T. (CHF 48,000)"
+    "New client created: ZPF-9921-0017 (assigned to RM Lena Koch)"
+
+  Link: [View Full Activity Log →] → /admin/audit
+
+================================================================================
+2. CLIENT MANAGEMENT (/admin/clients)
+================================================================================
+
+Major Admin sees all clients under their RM tree — not just their own.
+They can view, edit, and intervene on any client in their scope.
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT LIST TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Same component as Super Admin (client-table.tsx), with scope filter applied
+  server-side: ownerAdminId IN [list of RM ids under this Major Admin].
+
+  Search:     ClientID, full name, display name
+  Filters:    KYC Status · Risk Profile · Mandate Type · Account Status
+              Assigned RM (dropdown — scoped to their team only)
+  Sort:       Name · AUM · Last Login · Onboard Date
+
+  Columns:
+    ClientID          — ZPF-XXXX-XXXX
+    Name              — displayName
+    Assigned RM       — ownerAdmin.displayName [visible to Major Admin]
+    AUM               — Portfolio.totalValueChf
+    KYC               — status badge
+    Account Status    — Active / Locked
+    Last Login        — relative time
+    Actions           — [View] [Edit] [Lock/Unlock] [Reassign RM]
+
+  "Reassign RM" — Major Admin exclusive (within their tree):
+    Can reassign a client from one of their RMs to another RM under them.
+    Cannot reassign outside their tree (no access to other Major Admin's RMs).
+
+  Top-right: [+ Create Client] → /admin/clients/new
+    Major Admin can create clients — the client will be assigned to a
+    specific RM they select during the creation flow.
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT REASSIGNMENT (within tree)
+────────────────────────────────────────────────────────────────────────────────
+
+  Trigger: [Reassign RM] action on client row or within client profile
+
+  Modal — "Reassign Client to Another RM":
+    Current RM:       [read-only display]
+    New RM:           [dropdown — only RMs under this Major Admin]
+    Reason:           [textarea, required]
+    Warning:          "This will transfer RM ownership. The client's
+                       portal and all data remain unchanged."
+    Confirm:          "Reassign Client"
+
+  On confirm:
+    → PATCH /api/admin/clients/[clientId] { ownerAdminId: newRmId }
+    → AuditLog: CLIENT_REASSIGNED
+    → Notification to new RM: "Client [name] has been assigned to you"
+    → Old RM notified: "Client [name] has been reassigned to [new RM name]"
+
+  Cannot reassign to an RM outside their tree — 403 enforced server-side.
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT CREATION (/admin/clients/new)
+────────────────────────────────────────────────────────────────────────────────
+
+  Same multi-step form as standard Admin, with one addition in Step 2:
+
+  STEP 2 — Account Settings (Major Admin version):
+    Risk profile
+    Mandate type
+    KYC status + expiry
+    Assign to RM: [dropdown — only RMs under this Major Admin]   ← added field
+      Default: pre-select if Major Admin has only one RM
+
+  Everything else is identical to the standard Admin creation flow.
+  (See ZPF_Production_Spec.txt Section 11.4 for full form details)
+
+────────────────────────────────────────────────────────────────────────────────
+CLIENT PROFILE (/admin/clients/[clientId])
+────────────────────────────────────────────────────────────────────────────────
+
+  Major Admin has full edit access to any client in their tree.
+  Same profile layout as Super Admin view, minus:
+    - No "Change Parent Admin" controls (system-level only)
+    - Reassign RM button is scoped to their tree only
+
+  Identity Panel:               Full name, DOB, nationality, etc.   [Edit]
+  Account Panel:                KYC, risk profile, mandate, lock    [Edit/Action]
+  Assigned RM Panel:            Current RM name + [Reassign RM]
+  RM Display Panel:             rmDisplayName, title, etc.          [Edit]
+  Quick Stats:                  Portfolio value, last login, TOTP, open threads
+
+  Sub-navigation:
+    Portfolio | Transactions | Documents | KYC | Transfers | Messages | Activity
+
+================================================================================
+3. TRANSFERS (/admin/transfers)
+================================================================================
+
+Major Admin sees all transfers across their RM tree.
+Their primary action is counter-approving large transfers.
+
+────────────────────────────────────────────────────────────────────────────────
+TRANSFER LIST TABS
+────────────────────────────────────────────────────────────────────────────────
+
+  Tabs:
+    Awaiting Counter (default if count > 0, else Pending)
+    Pending
+    Under Review
+    Approved
+    Executed
+    Rejected
+    All
+
+  "Awaiting Counter" tab is the Major Admin's primary action surface.
+  It is always the first tab shown if there are items in it.
+
+  Filter by RM (dropdown — scoped to their team)
+  Search by client name or ClientID
+
+────────────────────────────────────────────────────────────────────────────────
+AWAITING COUNTER-APPROVAL TAB
+────────────────────────────────────────────────────────────────────────────────
+
+  These are transfers that an RM reviewed and approved, but the amount
+  exceeds the system threshold (default CHF 500,000), triggering mandatory
+  Major Admin counter-approval before execution can proceed.
+
+  Each transfer card shows:
+    Client name + ClientID
+    Assigned RM name (who reviewed it)
+    Amount: [currency] [amount] (≈ CHF [chf_amount])
+      — amount is displayed prominently, with large font, gold color
+    Beneficiary: full name | country | masked IBAN
+    Bank: bank name | BIC
+    Reference: payment reference
+    Category: label
+    Client notes (if any)
+    Submitted by client: [date/time]
+    Reviewed by RM: [date/time] + RM name + RM review notes
+    Attachments: downloadable list
+
+  Action buttons:
+    [Counter-Approve]
+      → Modal: "Confirm Counter-Approval"
+        Shows full transfer summary
+        Optional notes field: "Counter-approval notes (internal)"
+        Confirm button: "Approve Transfer"
+        → counterApprovedById = this Major Admin's userId
+        → counterApprovedAt = now()
+        → status: PENDING_REVIEW → APPROVED (RM can now execute)
+        → AuditLog: TRANSFER_COUNTER_APPROVED
+        → Notification to RM: "Counter-approval granted for [client] transfer.
+                                You may now proceed to execution."
+
+    [Reject]
+      → Modal: "Reject Transfer"
+        Rejection reason [textarea, required — shown to client and RM]
+        "Reject Transfer" button
+        → status: REJECTED
+        → AuditLog: TRANSFER_REJECTED
+        → Notification to client (in-portal)
+        → Notification to RM
+
+    [Request Clarification from RM]
+      → Opens or creates an internal message thread with the RM
+        (isInternal = true, not visible to client)
+        Pre-filled subject: "Re: Transfer for [Client Name] — Clarification Needed"
+
+────────────────────────────────────────────────────────────────────────────────
+OTHER TRANSFER TABS
+────────────────────────────────────────────────────────────────────────────────
+
+  Major Admin can view all transfer details in every status tab.
+  They can also:
+    - Open any PENDING or UNDER_REVIEW transfer and manage it directly
+      (e.g., if an RM is unavailable)
+    - Approve below-threshold transfers (same as RM can do)
+    - Mark transfers as EXECUTED with a settlement reference
+    - Reject transfers with a reason
+
+  This is the intervention capability: Major Admin covers for absent RMs.
+
+================================================================================
+4. MESSAGES (/admin/messages)
+================================================================================
+
+Major Admin sees all message threads across their RM tree.
+
+────────────────────────────────────────────────────────────────────────────────
+MESSAGE INBOX
+────────────────────────────────────────────────────────────────────────────────
+
+  Layout: Split panel (same as all roles)
+    Left panel: Thread list
+    Right panel: Active thread
+
+  Thread List:
+    Filter: All / Unread / Open / Resolved
+    Filter by RM (dropdown — scoped to their team)   ← Major Admin exclusive
+    Search by client name
+
+    Each row:
+      Client display name + ClientID
+      Assigned RM name
+      Thread subject
+      Last message preview
+      Timestamp
+      Unread dot if unread
+      Priority badge if escalated
+
+  Thread View:
+    Full message history
+    Internal notes visible (staff-only messages)
+
+    Compose area:
+      Rich text editor (Tiptap)
+      "Internal note" toggle (not shown to client)
+      File attachment
+
+    Thread actions:
+      [Resolve Thread]
+      [Archive]
+      [Escalate to Super Admin]      ← only available if not already escalated
+      [Reassign to RM]               ← change which RM handles this thread
+
+    [Reassign to RM]:
+      Dropdown of RMs under this Major Admin only
+      → PATCH assignedAdminId on the MessageThread
+      → AuditLog: THREAD_REASSIGNED
+      → Notification to new RM: "Thread [subject] for [client] reassigned to you"
+
+  Major Admin can reply to any thread in their tree, even if the thread is
+  assigned to a specific RM. The reply appears as from their admin account.
+
+================================================================================
+5. STAFF / TEAM MANAGEMENT (/admin/staff)
+================================================================================
+
+Major Admin can create and manage the Admins (RMs) under them.
+They cannot see, create, or edit other Major Admins.
+
+────────────────────────────────────────────────────────────────────────────────
+TEAM LIST TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Shows only Admins where parentAdminId = this Major Admin's userId.
+
+  Columns:
+    Name            — StaffProfile.displayName + title
+    Role            — ADMIN / RM badge
+    Clients         — count of their assigned clients
+    AUM             — CHF sum of their clients' portfolios
+    Pending Transfers — count of their pending transfer items
+    Last Login      — relative time
+    TOTP Status     — Enrolled / Not Enrolled
+    Status          — Active / Inactive
+    Actions         — [View] [Edit] [Deactivate] [Reset TOTP]
+
+  Top-right: [+ Add RM] → /admin/staff/new
+
+────────────────────────────────────────────────────────────────────────────────
+CREATE RM ACCOUNT (/admin/staff/new)
+────────────────────────────────────────────────────────────────────────────────
+
+  Major Admin can only create ADMIN role accounts (not Major Admin).
+  The new RM's parentAdminId is automatically set to this Major Admin's userId.
+
+  STEP 1 — Identity
+    Full name (required)
+    Display name (pre-filled, editable)
+    Initials (auto-generated, editable)
+    Title (e.g., "Senior Relationship Manager", "Client Advisor")
+    Department (optional)
+
+  STEP 2 — Notification Settings
+    Notification email (optional)
+    Toggles:
+      □ Email on new client message
+      □ Email on transfer request
+      □ Email on unusual client login
+
+  STEP 3 — Credentials Preview
+    Staff ClientID: ZPF-XXXX-XXXX (auto-generated)
+    Initial Passphrase: [24-char random] (shown ONCE)
+    TOTP Enrollment URL: auth.zpfinanz.ch/enroll?token=xxxxx (72hr)
+    "Download Credential Sheet" button (in-memory PDF, never stored)
+    "I have securely noted these credentials" checkbox (required)
+
+  STEP 4 — Confirm
+    Summary → "Create RM Account"
+
+  After creation:
+    → User created (role = ADMIN, parentAdminId = this Major Admin's userId)
+    → StaffProfile created
+    → TotpEnrollmentToken created
+    → AuditLog: STAFF_CREATED
+
+────────────────────────────────────────────────────────────────────────────────
+EDIT RM PROFILE (/admin/staff/[staffId])
+────────────────────────────────────────────────────────────────────────────────
+
+  Major Admin can edit any RM under them.
+
+  Profile Info:
+    Display name, title, department, initials     [Editable]
+
+  Notification Settings:
+    Notification email [input + verify button]
+    Toggle email preferences
+
+  Security:
+    TOTP status: Enrolled / Not Enrolled
+    [Generate New Enrollment Link] → creates TotpEnrollmentToken
+      Shows new enrollment URL + download option
+    Last login info (IP, city, timestamp)
+    Failed TOTP attempts [Reset Counter button]
+
+  Account Status:
+    [Deactivate RM] → confirmation modal, requires reason
+      If RM has active clients: "This RM has [N] active clients.
+        Please reassign their clients before deactivating, or they will
+        be automatically reassigned to you."
+      On confirm: isLocked = true, all sessions revoked
+      → AuditLog: STAFF_DEACTIVATED
+
+  What Major Admin CANNOT do on RM profiles:
+    - Change the RM's role (Super Admin only)
+    - Change the RM's parentAdminId (Super Admin only)
+    - Edit another Major Admin's RM
+
+================================================================================
+6. AUDIT LOG (/admin/audit)
+================================================================================
+
+Major Admin sees audit entries for:
+  - All actions by any RM under them
+  - All actions on any client in their tree
+  - Their own actions
+
+They cannot see actions by other Major Admins or their RMs.
+
+────────────────────────────────────────────────────────────────────────────────
+AUDIT LOG TABLE
+────────────────────────────────────────────────────────────────────────────────
+
+  Same table as Super Admin view, but scoped:
+    WHERE userId IN [this Major Admin's userId + all their RM userIds]
+    OR clientId IN [all clients in their tree]
+
+  Filters:
+    Date range picker
+    RM (dropdown — scoped to their team)
+    Client (search — scoped to their tree)
+    Action type (multi-select — same list as SA)
+    IP address
+
+  Columns:
+    Timestamp · RM/Admin · Action · Client · Entity · IP · Notes
+
+  Pagination: 50 per page, server-side
+  Sort: Timestamp DESC by default
+  Export: [Export to CSV] — exports current filter result
+
+  Actions visible in Major Admin audit log:
+    CLIENT_CREATED
+    CLIENT_LOCKED / CLIENT_UNLOCKED
+    CLIENT_REASSIGNED            (actions they or SA performed on their clients)
+    KYC_STATUS_CHANGED
+    RISK_PROFILE_CHANGED
+    TRANSACTION_ADDED / EDITED / DELETED
+    TRANSFER_APPROVED
+    TRANSFER_COUNTER_APPROVED    (their own counter-approvals)
+    TRANSFER_REJECTED
+    TRANSFER_EXECUTED
+    DOCUMENT_UPLOADED / SEALED / UNSEALED
+    MESSAGE_SENT
+    THREAD_RESOLVED / REASSIGNED
+    BENEFICIARY_VERIFIED
+    STATEMENT_GENERATED
+    TOTP_ENROLLMENT_GENERATED
+    STAFF_CREATED / DEACTIVATED  (RMs they created/deactivated)
+    LOGIN_SUCCESS / LOGIN_FAILED / LOGOUT (all accounts in their tree)
+
+================================================================================
+7. WHAT MAJOR ADMIN CANNOT DO
+================================================================================
+
+  Cannot access /admin/config (System Configuration — Super Admin only)
+  Cannot create or edit Major Admin accounts
+  Cannot see clients, RMs, or activity outside their tree
+  Cannot reassign a client to an RM outside their tree
+  Cannot change an RM's role
+  Cannot change an RM's parentAdminId (move them to another Major Admin)
+  Cannot view the full system audit log
+  Cannot see system health indicators or total system AUM
+  Cannot lock or deactivate a Super Admin
+  Cannot see other Major Admins' activity
+
+  These restrictions are enforced in lib/permissions.ts and at the API layer.
+  403 is returned for any out-of-scope request — no data leakage.
+
+================================================================================
+8. DATA ACCESS RULES (enforced in lib/permissions.ts)
+================================================================================
+
+  Helper: getMajorAdminTree(majorAdminId)
+    → Returns: { rmIds: string[], clientIds: string[] }
+    → Called at the top of every scoped query
+    → Cached in Redis for 60 seconds (tree changes are rare, staleness is acceptable)
+
+  canAccessClient(MAJOR_ADMIN, clientId)
+    → clientId must be in getMajorAdminTree().clientIds
+
+  canApproveTransfer(MAJOR_ADMIN, transfer)
+    → transfer.assignedAdminId must be in getMajorAdminTree().rmIds
+    → Can approve at any amount (their purpose includes large transfer approval)
+
+  canCounterApprove(MAJOR_ADMIN, transfer)
+    → transfer.requiresCounterApproval = true
+    → transfer.status = AWAITING_COUNTER
+    → transfer.assignedAdminId in their tree
+
+  canManageStaff(MAJOR_ADMIN, targetUser)
+    → targetUser.parentAdminId = this Major Admin's userId
+    → targetUser.role = ADMIN (cannot manage another Major Admin)
+
+  canViewAuditLog(MAJOR_ADMIN)
+    → scoped to their tree (userId IN tree OR clientId IN tree)
+
+  canCreateAdmin(MAJOR_ADMIN)
+    → true (but created admin's parentAdminId = this Major Admin's userId)
+
+  canCreateMajorAdmin(MAJOR_ADMIN)
+    → false (Super Admin only)
+
+================================================================================
+9. COMPONENT & FILE STRUCTURE
+================================================================================
+
+  Major Admin uses the same component files as Super Admin and standard Admin.
+  Role-awareness is handled via:
+    1. Server-side scope filtering in all API routes
+    2. Conditional rendering in components (show/hide RM column, config link, etc.)
+    3. lib/permissions.ts helper calls before every mutation
+
+  No separate component tree for Major Admin — shared with all admin roles.
+
+  Key components with role-aware behaviour:
+    components/admin/admin-sidebar.tsx
+      — Shows "System Config" only for SUPER_ADMIN
+      — Shows "My Team" label for MAJOR_ADMIN, "Settings" for ADMIN
+    components/admin/client-table.tsx
+      — Shows "Assigned RM" column for MAJOR_ADMIN + SUPER_ADMIN
+      — Shows "Reassign RM/Client" action for relevant roles
+    components/admin/transfer-approval-card.tsx
+      — Shows "Counter-Approve" button only for MAJOR_ADMIN + SUPER_ADMIN
+        when transfer.status = AWAITING_COUNTER
+    components/admin/staff-table.tsx
+      — MAJOR_ADMIN sees only their RMs
+      — SUPER_ADMIN sees all staff in two sections
+
+================================================================================
+10. API ROUTES (Major Admin scoping)
+================================================================================
+
+  All admin API routes apply the same permission helpers.
+  Major Admin routes return scoped data automatically:
+
+  GET  /api/admin/overview/stats
+    Returns stats scoped to their tree (AUM, clients, pending, etc.)
+
+  GET  /api/admin/clients
+    Query applies: WHERE ownerAdminId IN [majorAdmin's RM ids]
+
+  GET  /api/admin/transfers
+    Query applies: WHERE assignedAdminId IN [majorAdmin's RM ids]
+
+  PATCH /api/admin/transfers/[id]/counter-approve
+    Body: { notes? }
+    Auth: MAJOR_ADMIN or SUPER_ADMIN
+    Checks: transfer must be AWAITING_COUNTER + in their scope
+
+  PATCH /api/admin/clients/[clientId]/reassign
+    Body: { newAdminId, reason }
+    Auth: MAJOR_ADMIN (newAdminId must be in their tree) or SUPER_ADMIN
+
+  GET  /api/admin/staff
+    Query applies: WHERE parentAdminId = this Major Admin's userId
+                   AND role = ADMIN
+
+  POST /api/admin/staff
+    Body: { role: "ADMIN", ... }
+    Auth: MAJOR_ADMIN can only create ADMIN role
+    parentAdminId auto-set to this Major Admin's userId
+
+  GET  /api/admin/audit
+    Query applies: WHERE (userId IN tree OR relatedClientId IN tree)
+
+  GET  /api/admin/messages
+    Query applies: threads WHERE assignedAdminId IN [RM ids in their tree]
+
+================================================================================
+END OF MAJOR ADMIN PANEL SPECIFICATION
+================================================================================
